@@ -78,6 +78,7 @@ class Config(object):
         self.alphaPacking = 0.8
         self.betaInertia = 1.2
         self.scaleInterval = 10
+        self.slackPreemptablePreference = 0.0
 
         #Resource requirements
         self.defaultMemory = 2147483648
@@ -196,6 +197,7 @@ class Config(object):
         setOption("alphaPacking", float)
         setOption("betaInertia", float)
         setOption("scaleInterval", float)
+        setOption("slackPreemptablePreference", float)
 
         #Resource requirements
         setOption("defaultMemory", h2b, iC(1))
