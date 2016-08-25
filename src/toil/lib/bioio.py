@@ -144,6 +144,8 @@ def setLoggingFromOptions(options):
     rootLogger.setLevel(defaultLogLevel)
     if options.logLevel is not None:
         setLogLevel(options.logLevel)
+    else:
+        setLogLevel(getLogLevelString())
     logger.info("Root logger is at level '%s', 'toil' logger at level '%s'.",
                 getLogLevelString(logger=rootLogger), getLogLevelString(logger=toilLogger))
     if options.logFile is not None:

@@ -315,9 +315,9 @@ def _addOptions(addGroupFn, config):
                              "in an autoscaled cluster, as well as parameters to control the "
                              "level of provisioning.")
 
-    addOptionFn("--provisioner", dest="provisioner", choices=['cgcloud'],
-                help="The provisioner for cluster auto-scaling. Currently only the cgcloud "
-                     "provisioner exists. The default is %s." % config.provisioner)
+    addOptionFn("--provisioner", dest="provisioner", choices=['cgcloud', 'aws'],
+                help="The provisioner for cluster auto-scaling. The currently supported choices are"
+                     "cgcloud or aws. The default is %s." % config.provisioner)
 
     for preemptable in (False, True):
         def _addOptionFn(*name, **kwargs):
@@ -582,6 +582,10 @@ class Toil(object):
                 logger.info('Using cgcloud provisioner.')
                 from toil.provisioners.cgcloud.provisioner import CGCloudProvisioner
                 self._provisioner = CGCloudProvisioner(self.config, self._batchSystem)
+            elif self.config.provisioner == 'aws':
+                logger.info('Using aws provisioner.')
+                from toil.provisioners.aws.awsProvisioner import AWSProvisioner
+                self._provisioner = AWSProvisioner(self.config, self._batchSystem)
             else:
                 # Command line parser shold have checked argument validity already
                 assert False, self.config.provisioner
