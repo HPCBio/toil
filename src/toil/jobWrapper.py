@@ -23,7 +23,7 @@ class JobWrapper( object ):
     scripts is persisted separately since it may be much bigger than the state managed by this
     class and should therefore only be held in memory for brief periods of time.
     """
-    def __init__( self, command, memory, cores, disk, preemptable,
+    def __init__( self, command, memory, cores, disk, name, preemptable,
                   jobStoreID, remainingRetryCount, predecessorNumber,
                   filesToDelete=None, predecessorsFinished=None, 
                   stack=None, services=None, 
@@ -40,6 +40,7 @@ class JobWrapper( object ):
         self.cores = cores
         # Max number of bytes on disk space used by the job
         self.disk = disk
+        self.name = name
         # Can the job be run on a node that can be preempted
         self.preemptable = preemptable
         # The jobStoreID of the job. JobStore.load(jobStoreID) will return the job

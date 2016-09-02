@@ -290,7 +290,7 @@ class JobBatcher:
                 else:
                     raise
             if jobWrapper.logJobStoreFileID is not None:
-                logger.warn("The jobWrapper seems to have left a log file, indicating failure: %s", jobStoreID)
+                logger.warn("The jobWrapper seems to have left a log file, indicating failure: %s, %s", jobStoreID)
                 with jobWrapper.getLogFileHandle( self.jobStore ) as logFileStream:
                     logStream( logFileStream, jobStoreID, logger.warn )
             if resultStatus != 0:

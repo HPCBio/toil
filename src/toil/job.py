@@ -161,7 +161,7 @@ class Job(ResourceRequirementMixin):
     """
     Class represents a unit of work in toil.
     """
-    def __init__(self, memory=None, cores=None, disk=None, preemptable=None, checkpoint=False):
+    def __init__(self, memory=None, cores=None, disk=None, preemptable=None, name=None, checkpoint=False):
         """
         This method must be called by any overriding constructor.
         
@@ -203,6 +203,8 @@ class Job(ResourceRequirementMixin):
         # entire return value.
         self._rvs = collections.defaultdict(list)
         self._promiseJobStore = None
+        self.job = self.__class__.__name__
+        self.name = name
 
     def run(self, fileStore):
         """
@@ -646,7 +648,7 @@ class Job(ResourceRequirementMixin):
         Abstract class used to define the interface to a service.
         """
         __metaclass__ = ABCMeta
-        def __init__(self, memory=None, cores=None, disk=None, preemptable=None):
+        def __init__(self, memory=None, cores=None, disk=None, preemptable=None, name=None):
             """
             Memory, core and disk requirements are specified identically to as in \
             :func:`toil.job.Job.__init__`.
@@ -654,6 +656,8 @@ class Job(ResourceRequirementMixin):
             super(Job.Service, self).__init__(memory=memory, cores=cores, disk=disk, preemptable=preemptable)
             self._childServices = []
             self._hasParent = False
+            self.job = self.__class__.__name__
+            self.name = name
 
         @abstractmethod
         def start(self, fileStore):
@@ -1219,14 +1223,17 @@ class FunctionWrappingJob(Job):
                         if argSpec.defaults != None else {}
         argFn = lambda x : kwargs.pop(x) if x in kwargs else \
                             (human2bytes(str(argDict[x])) if x in argDict.keys() else None)
+        self.userFunctionName = str(userFunction.__name__)
+        nameFn = lambda y: kwargs.pop(y) if y in kwargs else \
+                            (argDict[y]) if y in argDict.keys() else None
         Job.__init__(self, memory=argFn("memory"), cores=argFn("cores"),
-                     disk=argFn("disk"), preemptable=argFn("preemptable"),
+                     disk=argFn("disk"), preemptable=argFn("preemptable"), name=nameFn('name'),
                      checkpoint=kwargs.pop("checkpoint") if "checkpoint" in kwargs else False)
         #If dill is installed pickle the user function directly
         #TODO: Add dill support
         #else use indirect method
         self.userFunctionModule = ModuleDescriptor.forModule(userFunction.__module__).globalize()
-        self.userFunctionName = str(userFunction.__name__)
+        self.job = self.userFunctionName
         self._args=args
         self._kwargs=kwargs
 
@@ -1371,14 +1378,14 @@ class ServiceJob(Job):
         :param service: The service to wrap in a job.
         :type service: toil.job.Job.Service
         """
-        Job.__init__(self, **service._requirements)
+        Job.__init__(self, name=service.name, **service._requirements)
         # service.__module__ is the module defining the class service is an instance of.
         self.serviceModule = ModuleDescriptor.forModule(service.__module__).globalize()
 
         #The service to run - this will be replace before serialization with a pickled version
         self.service = service
         self.pickledService = None
-
+        self.job = service.job
         # This references the parent job wrapper. It is initialised just before
         # the job is run. It is used to access the start and terminate flags.
         self.jobWrapper = None
