@@ -155,7 +155,7 @@ class Resource(namedtuple('Resource', ('name', 'pathHash', 'url', 'contentHash')
             try:
                 os.rename(tempDirPath, dirPath)
             except OSError as e:
-                if e.errno == errno.ENOTEMPTY:
+                if e.errno == errno.ENOTEMPTY or e.errno == errno.EEXIST:
                     # Another process beat us to it.
                     # TODO: This is correct but inefficient since multiple processes download the resource redundantly
                     pass
