@@ -15,7 +15,6 @@
 import logging
 import os
 import pipes
-import subprocess
 from abc import abstractmethod, ABCMeta
 from urlparse import urlparse
 from uuid import uuid4
@@ -23,10 +22,98 @@ from uuid import uuid4
 from bd2k.util.iterables import concat
 from cgcloud.lib.test import CgcloudTestCase
 
-from toil.test import integrative, ToilTest
-from toil.version import version as toil_version, cgcloudVersion
+from toil.test import integrative, ToilTest, needs_aws
+from toil.version import cgcloudVersion
 
 log = logging.getLogger(__name__)
+
+
+@needs_aws
+@integrative
+class AWSProvisionerTest(ToilTest):
+
+    def __init__(self, methodName='AWSprovisioner'):
+        super(AWSProvisionerTest, self).__init__(methodName=methodName)
+        self.instanceType = 'm3.large'
+        self.keyName = 'jenkins@jenkins-master'
+        self.clusterName = 'aws-provisioner-test-' + str(uuid4())
+        self.toilScripts = '2.1.0a1.dev654'#'2.1.0a1.dev455'
+        self.numWorkers = 10
+        self.numSamples = 10
+        self.spotBid = '0.15'
+
+    def setUp(self):
+        super(AWSProvisionerTest, self).setUp()
+        self.jobStore = 'aws:%s:toil-it-%s' % (self.awsRegion(), uuid4())
+
+    def tearDown(self):
+        from toil.provisioners.aws.awsProvisioner import AWSProvisioner
+        AWSProvisioner.destroyCluster(self.clusterName)
+
+    def _test(self, spotInstances=False):
+        from toil.provisioners.aws.awsProvisioner import AWSProvisioner
+        AWSProvisioner.launchCluster(instanceType=self.instanceType, keyName=self.keyName,
+                                     clusterName=self.clusterName)
+
+        master = AWSProvisioner._getMaster(clusterName=self.clusterName, wait=True)
+
+        venv_command = 'virtualenv --system-site-packages /home/venv'
+        AWSProvisioner._ssh(master.ip_address, command=venv_command)
+
+        upgrade_command = '/home/venv/bin/pip install setuptools --upgrade'
+        AWSProvisioner._ssh(master.ip_address, command=upgrade_command)
+
+        yaml_command = '/home/venv/bin/pip install pyyaml'
+        AWSProvisioner._ssh(master.ip_address, command=yaml_command)
+
+        # install toil scripts
+        install_command = ('/home/venv/bin/pip install toil-scripts==%s' % self.toilScripts)
+        AWSProvisioner._ssh(master.ip_address, command=install_command)
+
+        # install curl
+        install_command = 'sudo apt-get -y install curl'
+        AWSProvisioner._ssh(master.ip_address, command=install_command)
+
+        toilOptions = ['--batchSystem=mesos',
+                       '--workDir=/var/lib/toil',
+                       '--mesosMaster=%s:5050' % master.private_ip_address,
+                       '--clean=always',
+                       '--retryCount=0']
+
+        toilOptions.extend(['--provisioner=aws',
+                            '--nodeType=' + self.instanceType,
+                            '--maxNodes=%s' % self.numWorkers,
+                            '--logDebug'])
+        if spotInstances:
+            toilOptions.extend([
+                '--preemptableNodeType=%s:%s' % (self.instanceType, self.spotBid),
+                # The RNASeq pipeline does not specify a preemptability requirement so we
+                # need to specify a default, otherwise jobs would never get scheduled.
+                '--defaultPreemptable',
+                '--maxPreemptableNodes=%s' % self.numWorkers])
+
+        toilOptions = ' '.join(toilOptions)
+
+        runCommand = 'bash -c \\"export PATH=/home/venv/bin/:$PATH;export TOIL_SCRIPTS_TEST_NUM_SAMPLES=%i; export TOIL_SCRIPTS_TEST_TOIL_OPTIONS=' + pipes.quote(toilOptions) + \
+                     '; export TOIL_SCRIPTS_TEST_JOBSTORE=' + self.jobStore + \
+                     '; /home/venv/bin/python -m unittest -v' + \
+                     ' toil_scripts.rnaseq_cgl.test.test_rnaseq_cgl.RNASeqCGLTest.test_manifest\\"'
+
+        runCommand %= self.numSamples
+
+        AWSProvisioner._ssh(master.ip_address, runCommand)
+
+    @integrative
+    @needs_aws
+    def testAutoScale(self):
+        self._test(spotInstances=False)
+
+
+    @integrative
+    @needs_aws
+    def testSpotAutoScale(self):
+        self._test(spotInstances=True)
+
 
 
 @integrative
