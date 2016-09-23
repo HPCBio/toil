@@ -17,10 +17,12 @@ import subprocess
 import logging
 
 import time
+from contextlib import contextmanager
+
 from boto.ec2.blockdevicemapping import BlockDeviceMapping, BlockDeviceType
 from boto.exception import BotoServerError, EC2ResponseError
 from cgcloud.lib.ec2 import ec2_instance_types, retry_ec2, wait_spot_requests_active, a_short_time, \
-    wait_transition, inconsistencies_detected, create_spot_instances, create_ondemand_instances
+    wait_transition, inconsistencies_detected, create_ondemand_instances, a_long_time
 from itertools import islice, count
 
 from toil.batchSystems.abstractBatchSystem import AbstractScalableBatchSystem
@@ -32,6 +34,10 @@ from boto.utils import get_instance_metadata
 from toil.provisioners import BaseAWSProvisioner
 
 logger = logging.getLogger(__name__)
+
+
+def addRoleErrors(e):
+    return e.status == 404
 
 
 def expectedLaunchErrors(e):
@@ -56,9 +62,9 @@ dockerInfo = os.environ['TOIL_APPLIANCE_SELF'] if 'TOIL_APPLIANCE_SELF' in os.en
 class AWSProvisioner(AbstractProvisioner, BaseAWSProvisioner):
 
     def __init__(self, config, batchSystem):
-        self.ctx = Context(availability_zone='us-west-2a', namespace='/')
         self.instanceMetaData = get_instance_metadata()
-        self.securityGroupName = self.instanceMetaData['security-groups']
+        self.clusterName = self.instanceMetaData['security-groups']
+        self.ctx = Context(availability_zone='us-west-2a', namespace=self._toNameSpace(self.clusterName))
         self.spotBid = None
         parsedBid = config.nodeType.split(':', 1)
         if len(config.nodeType) != len(parsedBid[0]):
@@ -110,13 +116,19 @@ class AWSProvisioner(AbstractProvisioner, BaseAWSProvisioner):
         return ouput
 
     @classmethod
+    def _toNameSpace(cls, clusterName):
+        if not clusterName.startswith('/'):
+            clusterName = '/'+clusterName+'/'
+        return clusterName.replace('-','/')
+
+    @classmethod
     def _getMaster(cls, clusterName, wait=False):
-        ctx = Context(availability_zone='us-west-2a', namespace='/')
+        ctx = Context(availability_zone='us-west-2a', namespace=cls._toNameSpace(clusterName))
         instances = cls.__getNodesInCluster(ctx, clusterName, both=True)
         instances.sort(key=lambda x: x.launch_time)
         master = instances[0]  # assume master was launched first
         if wait:
-            logger.info('Waiting for master to run...')
+            logger.info('Waiting for master to enter \'running\' state...')
             wait_transition(master, {'pending'}, 'running')
             logger.info('... master is running')
             cls._waitForIP(master)
@@ -192,8 +204,8 @@ class AWSProvisioner(AbstractProvisioner, BaseAWSProvisioner):
 
     @classmethod
     def launchCluster(cls, instanceType, keyName, clusterName, spotBid=None):
-        ctx = Context(availability_zone='us-west-2a', namespace='/')
-        profileARN = cls._getProfileARN(ctx, role='leader')
+        ctx = Context(availability_zone='us-west-2a', namespace=cls._toNameSpace(clusterName))
+        profileARN = cls._getProfileARN(ctx)
         # the security group name is used as the cluster identifier
         cls._createSecurityGroup(ctx, clusterName)
         bdm = cls._getBlockDeviceMapping(ec2_instance_types[instanceType])
@@ -215,17 +227,19 @@ class AWSProvisioner(AbstractProvisioner, BaseAWSProvisioner):
             kwargs['launch_group'] = clusterName
             logger.info('Launching preemptable master')
             # force generator to evaluate
-            list(create_spot_instances(ec2=ctx.ec2, price=spotBid, image_id=coreOSAMI, spec=kwargs, num_instances=1))
+            list(create_spot_instances(ec2=ctx.ec2, price=spotBid, image_id=coreOSAMI,
+                                       clusterName=clusterName, spec=kwargs, num_instances=1))
         return cls._getMaster(clusterName=clusterName, wait=True)
 
     @classmethod
     def destroyCluster(cls, clusterName):
-        ctx = Context(availability_zone='us-west-2a', namespace='/')
+        ctx = Context(availability_zone='us-west-2a', namespace=cls._toNameSpace(clusterName))
         instances = cls.__getNodesInCluster(ctx, clusterName, both=True)
         spotIDs = cls._getSpotRequestIDs(ctx, clusterName)
         if spotIDs:
             ctx.ec2.cancel_spot_instance_requests(request_ids=spotIDs)
         if instances:
+            cls._deleteIAMProfiles(instances=instances, ctx=ctx)
             cls._terminateInstance(instances=instances, ctx=ctx)
         logger.info('Deleting security group...')
         for attempt in retry_ec2(retry_after=30, retry_for=300, retry_while=expectedShutdownErrors):
@@ -249,17 +263,17 @@ class AWSProvisioner(AbstractProvisioner, BaseAWSProvisioner):
         for profile in instanceProfiles:
             profile_name = profile['arn'].split('/', 1)[1]
             try:
-                ctx.iam.remove_role_from_instance_profile(profile_name, 'toil-appliance-worker')
+                ctx.iam.remove_role_from_instance_profile(profile_name, profile_name)
             except BotoServerError as e:
                 if e.status == 404:
-                    ctx.iam.remove_role_from_instance_profile(profile_name, 'toil-appliance-leader')
+                    pass
                 else:
                     raise
             ctx.iam.delete_instance_profile(profile_name)
 
     def _addNodes(self, instancesToLaunch, preemptable=False):
         bdm = self._getBlockDeviceMapping(self.instanceType)
-        arn = self._getProfileARN(self.ctx, role='worker')
+        arn = self._getProfileARN(self.ctx)
         # quay.io/toil-leader:tag
         workerData = dockerInfo.rsplit(':', 1)
         workerRepo = workerData[0].rsplit('-', 1)[0] + '-worker'
@@ -268,30 +282,20 @@ class AWSProvisioner(AbstractProvisioner, BaseAWSProvisioner):
                       'args': workerArgs.format(ip=self.masterIP, preemptable=preemptable),
                       'repo': workerRepo}
         userData = AWSUserData.format(**workerData)
-        if not preemptable:
-            logger.debug('Launching non-preemptable instance(s)')
-            for instance in range(0, instancesToLaunch):
-                for attempt in retry_ec2(retry_while=expectedLaunchErrors):
-                    with attempt:
-                        self.ctx.ec2.run_instances(image_id=coreOSAMI, key_name=self.keyName,
-                                                   security_groups=[self.securityGroupName],
-                                                   instance_type=self.instanceType.name,
-                                                   instance_profile_arn=arn, user_data=userData,
-                                                   block_device_map=bdm)
-        else:
-            logger.debug('Launching spot instance(s) with bid of %s', self.spotBid)
-            requests = []
-            for attempt in retry_ec2(retry_while=expectedLaunchErrors):
-                with attempt:
-                    # returns list of SpotInstanceRequests
-                    requests = self.ctx.ec2.request_spot_instances(price=self.spotBid, image_id=coreOSAMI,
-                                                                   count=instancesToLaunch, key_name=self.keyName,
-                                                                   security_groups=[self.securityGroupName],
-                                                                   instance_type=self.instanceType.name,
-                                                                   instance_profile_arn=arn, user_data=userData,
-                                                                   block_device_map=bdm)
-            wait_spot_requests_active(ec2=self.ctx.ec2, requests=requests)
+        kwargs = {'key_name': self.keyName, 'security_groups': [self.clusterName],
+                  'instance_type': self.instanceType,
+                  'user_data': userData, 'block_device_map': bdm,
+                  'instance_profile_arn': arn}
 
+        if not preemptable:
+            logger.info('Launching %s non-preemptable master', instancesToLaunch)
+            create_ondemand_instances(self.ctx.ec2, image_id=coreOSAMI,
+                                      spec=kwargs, num_instances=1)
+        else:
+            logger.info('Launching %s preemptable nodes', instancesToLaunch)
+            # force generator to evaluate
+            list(create_spot_instances(ec2=self.ctx.ec2, price=self.spotBid, image_id=coreOSAMI,
+                                       clusterName=self.clusterName, spec=kwargs, num_instances=instancesToLaunch))
         logger.info('Launched %s new instance(s)', instancesToLaunch)
 
     @classmethod
@@ -357,9 +361,9 @@ class AWSProvisioner(AbstractProvisioner, BaseAWSProvisioner):
 
     def _getNodesInCluster(self, preeptable=False, both=False):
         if not both:
-            return self.__getNodesInCluster(self.ctx, self.securityGroupName, preemptable=preeptable)
+            return self.__getNodesInCluster(self.ctx, self.clusterName, preemptable=preeptable)
         else:
-            return self.__getNodesInCluster(self.ctx, self.securityGroupName, both=both)
+            return self.__getNodesInCluster(self.ctx, self.clusterName, both=both)
 
     def _getWorkersInCluster(self, preemptable):
         entireCluster = self._getNodesInCluster(both=True)
@@ -372,7 +376,9 @@ class AWSProvisioner(AbstractProvisioner, BaseAWSProvisioner):
     @classmethod
     def _getSpotRequestIDs(cls, ctx, clusterName):
         requests = ctx.ec2.get_all_spot_instance_requests()
-        return [x.id for x in requests if x.launch_group == clusterName]
+        tags = ctx.ec2.get_all_tags({'tag:': {'clusterName': clusterName}})
+        idsToCancel = [tag.id for tag in tags]
+        return [request for request in requests if request.id in idsToCancel]
 
     @classmethod
     def _createSecurityGroup(cls, ctx, name):
@@ -385,31 +391,31 @@ class AWSProvisioner(AbstractProvisioner, BaseAWSProvisioner):
             else:
                 raise
         else:
-            for attempt in retry_ec2(retry_while=groupNotFound, retry_for=300):
+            for attempt in retryBoto(retryWhile=groupNotFound, retryFor=300):
                 with attempt:
                     # open port 22 for ssh-ing
                     web.authorize(ip_protocol='tcp', from_port=22, to_port=22, cidr_ip='0.0.0.0/0')
-            for attempt in retry_ec2(retry_while=groupNotFound, retry_for=300):
+            for attempt in retryBoto(retryWhile=groupNotFound, retryFor=300):
                 with attempt:
                     # the following authorizes all port access within the web security group
                     web.authorize(ip_protocol='tcp', from_port=0, to_port=65535, src_group=web)
-            for attempt in retry_ec2(retry_while=groupNotFound, retry_for=300):
+            for attempt in retryBoto(retryWhile=groupNotFound, retryFor=300):
                 with attempt:
-                    # open port 5050 for mesos web interface
+                    # open port 5050-5051 for mesos web interface
                     web.authorize(ip_protocol='tcp', from_port=5050, to_port=5051, cidr_ip='0.0.0.0/0')
 
     @classmethod
-    def _getProfileARN(cls, ctx, role):
-        roleName = 'toil-appliance-' + role
+    def _getProfileARN(cls, ctx):
+        roleName = 'toil'
         policy = dict(iam_full=iam_full_policy, ec2_full=ec2_full_policy,
                       s3_full=s3_full_policy, sbd_full=sdb_full_policy)
-        ctx.setup_iam_ec2_role(role_name=roleName, policies=policy)
+        iamRoleName = ctx.setup_iam_ec2_role(role_name=roleName, policies=policy)
 
         try:
-            profile = ctx.iam.get_instance_profile(roleName)
+            profile = ctx.iam.get_instance_profile(iamRoleName)
         except BotoServerError as e:
             if e.status == 404:
-                profile = ctx.iam.create_instance_profile(roleName)
+                profile = ctx.iam.create_instance_profile(iamRoleName)
                 profile = profile.create_instance_profile_response.create_instance_profile_result
             else:
                 raise
@@ -422,10 +428,84 @@ class AWSProvisioner(AbstractProvisioner, BaseAWSProvisioner):
                 raise RuntimeError('Did not expect profile to contain more than one role')
         elif len(profile.roles) == 1:
             # this should be profile.roles[0].role_name
-            if profile.roles.member.role_name == roleName:
+            if profile.roles.member.role_name == iamRoleName:
                 return profile_arn
             else:
-                ctx.iam.remove_role_from_instance_profile(roleName,
+                ctx.iam.remove_role_from_instance_profile(iamRoleName,
                                                           profile.roles.member.role_name)
-        ctx.iam.add_role_to_instance_profile(roleName, roleName)
+        for attempt in retryBoto(retryWhile=addRoleErrors):
+            with attempt:
+                ctx.iam.add_role_to_instance_profile(iamRoleName, iamRoleName)
         return profile_arn
+
+
+def retryBoto(retryWhile, retryFor=180, retryAfter=5):
+    # adapted from cgcloud.lib.ec2.retry_ec2 for generic boto errors
+    if retryFor > 0:
+        go = [None]
+
+        @contextmanager
+        def repeated_attempt():
+            try:
+                yield
+            except BotoServerError as e:
+                if time.time() + retryAfter < expiration and retryWhile(e):
+                    logger.info('... got %s, trying again in %is ...', e.error_code, retryAfter)
+                    time.sleep(retryAfter)
+                else:
+                    raise
+            else:
+                go.pop()
+
+        expiration = time.time() + retryFor
+        while go:
+            yield repeated_attempt()
+    else:
+        @contextmanager
+        def single_attempt():
+            yield
+
+        yield single_attempt()
+
+
+def create_spot_instances(ec2, price, image_id, spec, clusterName,
+                          num_instances=1, timeout=None, tentative=False):
+    """
+    Adapted from cgcloud.lib.ec2.create_spot_instances to tag spot requests with the cluster name
+    so they can be discovered and cleaned up at a later time
+
+    :rtype: Iterator[list[Instance]]
+    """
+    for attempt in retry_ec2(retry_for=a_long_time,
+                             retry_while=inconsistencies_detected):
+        with attempt:
+            requests = ec2.request_spot_instances(price, image_id, count=num_instances, **spec)
+
+    ec2.create_tags([x.id for x in requests], {'clusterName': clusterName})
+    num_active, num_other = 0, 0
+    # noinspection PyUnboundLocalVariable,PyTypeChecker
+    # request_spot_instances's type annotation is wrong
+    for batch in wait_spot_requests_active(ec2,
+                                           requests,
+                                           timeout=timeout,
+                                           tentative=tentative):
+        instance_ids = []
+        for request in batch:
+            if request.state == 'active':
+                instance_ids.append(request.instance_id)
+                num_active += 1
+            else:
+                logger.info('Request %s in unexpected state %s.', request.id, request.state)
+                num_other += 1
+        if instance_ids:
+            # This next line is the reason we batch. It's so we can get multiple instances in
+            # a single request.
+            yield ec2.get_only_instances(instance_ids)
+    if not num_active:
+        message = 'None of the spot requests entered the active state'
+        if tentative:
+            logger.warn(message + '.')
+        else:
+            raise RuntimeError(message)
+    if num_other:
+        logger.warn('%i request(s) entered a state other than active.', num_other)
