@@ -283,7 +283,7 @@ class AWSProvisioner(AbstractProvisioner, BaseAWSProvisioner):
                       'repo': workerRepo}
         userData = AWSUserData.format(**workerData)
         kwargs = {'key_name': self.keyName, 'security_groups': [self.clusterName],
-                  'instance_type': self.instanceType,
+                  'instance_type': self.instanceType.name,
                   'user_data': userData, 'block_device_map': bdm,
                   'instance_profile_arn': arn}
 
