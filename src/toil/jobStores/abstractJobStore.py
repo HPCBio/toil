@@ -596,25 +596,8 @@ class AbstractJobStore(object):
     ##########################################  
 
     @abstractmethod
-    def create(self, command, memory, cores, disk, preemptable, name, job, predecessorNumber=0):
+    def create(self, issuableJob):
         """
-        Creates a jobWrapper with specified resources and command, adds it to the job store and
-        returns it.
-        
-        :param str command: the shell command that will be executed when the job is being run
-
-        :param int memory: the amount of RAM in bytes needed to run the job
-
-        :param float cores: the number of cores needed to run the job
-
-        :param int disk: the amount of disk in bytes needed to run the job
-
-        :param bool preemptable: whether the job can be run on a preemptable node
-
-        :param int predecessorNumber: argument to the job constructor. Specifies the number of
-               other jobWrappers that specify this job in their stack
-
-        :return: the newly created jobWrapper object
         :rtype: toil.jobWrapper.JobWrapper
         """
         raise NotImplementedError()

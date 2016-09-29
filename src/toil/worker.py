@@ -74,8 +74,6 @@ def main():
     from toil.lib.bioio import setLogLevel
     from toil.lib.bioio import getTotalCpuTime
     from toil.lib.bioio import getTotalCpuTimeAndMemoryUsage
-    from toil.lib.bioio import makePublicDir
-    from toil.lib.bioio import system
     from toil.job import Job
     
     ########################################## 

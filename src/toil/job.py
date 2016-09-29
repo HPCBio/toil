@@ -32,6 +32,8 @@ from io import BytesIO
 
 from bd2k.util.expando import Expando
 from bd2k.util.humanize import human2bytes
+
+from toil import resolveEntryPoint
 from toil.common import Toil, addOptions
 from toil.lib.bioio import (setLoggingFromOptions,
                             getTotalCpuTimeAndMemoryUsage,
@@ -47,20 +49,12 @@ class ResourceRequirementMixin(object):
     If the object doesn't specify explicit requirements, these properties will fall back
     to the configured defaults. If the value cannot be determined, an AttributeError is raised.
     """
-    def __init__(self, memory=None, cores=None, disk=None, preemptable=None, name=None):
+    def __init__(self, memory=None, cores=None, disk=None, preemptable=None):
         self._cores = self._parseResource('cores', cores)
         self._memory = self._parseResource('memory', memory)
         self._disk = self._parseResource('disk', disk)
         self._preemptable = preemptable
-        self._name = name
         self._config = None
-
-    @property
-    def name(self):
-        """
-        A user specified name for the job to improve debugging
-        """
-        return self._name
 
     @property
     def disk(self):
@@ -118,8 +112,7 @@ class ResourceRequirementMixin(object):
         return {'memory':getattr(self, 'memory', None),
                 'cores': getattr(self, 'cores', None),
                 'disk': getattr(self, 'disk', None),
-                'preemptable': getattr(self, 'preemptable', None),
-                'name': getattr(self, 'name')}
+                'preemptable': getattr(self, 'preemptable', None)}
 
     @staticmethod
     def _parseResource(name, value):
@@ -166,7 +159,94 @@ class ResourceRequirementMixin(object):
                             % (name, type(value)))
 
 
-class Job(ResourceRequirementMixin):
+class JobLikeObject(ResourceRequirementMixin):
+    def __init__(self, name, job=None, **requirements):
+        super(JobLikeObject, self).__init__(**requirements)
+        self.name = name
+        self.job = job or self.__class__.__name__
+
+
+class IssuableJob(JobLikeObject):
+
+    def __init__(self, memory, cores, disk, preemptable, job, name, jobStoreID,
+                 jobStoreLocator, predecessorID=None, predecessorNumber=None):
+        # check what predecessorID is used for
+        assert predecessorID is not None or predecessorNumber is not None
+        assert not (predecessorNumber and predecessorID)
+        super(IssuableJob, self).__init__(memory=memory, cores=cores, disk=disk,
+                                          preemptable=preemptable, name=name, job=job)
+        self.jobStoreID = jobStoreID
+        self.predecessorID = None if predecessorNumber is not None and predecessorNumber<= 1 \
+            else predecessorID
+        self.predecessorNumber = predecessorNumber
+        self.jobStoreLocator = jobStoreLocator
+
+    @property
+    def command(self):
+        if self.jobStoreID is not None:
+            # created by fromJob
+            #assert inspect.currentframe().f_back().
+            return ' '.join(
+                (resolveEntryPoint('_toil_worker'), self.jobStoreLocator, self.jobStoreID))
+
+    # Serialization support methods
+
+    def toDict(self):
+        return self.__dict__.copy()
+
+    @classmethod
+    def fromDict(cls, d):
+        d = cls._filterArgDict(d)
+        return cls(**d)
+
+    @classmethod
+    def _filterArgDict(cls, d):
+        for key, value in dict(d).iteritems():
+            if key.startswith('_'):
+                d[key[1:]] = value
+                del d[key]
+        return d
+
+    def copy(self):
+        """
+        :rtype: JobWrapper
+        """
+        return self.fromDict(**self.__dict__)
+
+    def __hash__(self):
+        return hash(self.jobStoreID)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __repr__(self):
+        return '%s( **%r )' % (self.__class__.__name__, self.__dict__)
+
+    def __str__(self):
+        return str(self.toDict())
+
+    @classmethod
+    def fromJobWrapper(cls, jobWrapper):
+        return cls(jobStoreID=jobWrapper.jobStoreID, memory=jobWrapper.memory,
+                   cores=jobWrapper.cores, disk=jobWrapper.disk,
+                   preemptable=jobWrapper.preemptable,
+                   jobStoreLocator=jobWrapper.jobStoreLocator,
+                   job=jobWrapper.job,
+                   name=jobWrapper.name,
+                   predecessorNumber=jobWrapper.predecessorNumber)
+
+    @classmethod
+    def fromJob(cls, job, jobStoreLocator, predecessorNumber):
+        return cls(jobStoreID=None, memory=job.memory,
+                   cores=job.cores, disk=job.disk,
+                   preemptable=job.preemptable,
+                   jobStoreLocator=jobStoreLocator,
+                   job=job.job,
+                   name=job.name,
+                   predecessorNumber=predecessorNumber)
+
+
+class Job(JobLikeObject):
     """
     Class represents a unit of work in toil.
     """
@@ -212,7 +292,6 @@ class Job(ResourceRequirementMixin):
         # entire return value.
         self._rvs = collections.defaultdict(list)
         self._promiseJobStore = None
-        self.job = self.__class__.__name__
 
     def run(self, fileStore):
         """
@@ -651,7 +730,7 @@ class Job(ResourceRequirementMixin):
                 else:
                     return toil.restart()
 
-    class Service(ResourceRequirementMixin):
+    class Service(JobLikeObject):
         """
         Abstract class used to define the interface to a service.
         """
@@ -664,7 +743,6 @@ class Job(ResourceRequirementMixin):
             super(Job.Service, self).__init__(memory=memory, cores=cores, disk=disk, preemptable=preemptable, name=name)
             self._childServices = []
             self._hasParent = False
-            self.job = self.__class__.__name__
 
         @abstractmethod
         def start(self, fileStore):
@@ -893,15 +971,14 @@ class Job(ResourceRequirementMixin):
     #a job graph to the jobStore
     ####################################################
 
-    def _createEmptyJobWrapperForJob(self, jobStore, command=None, predecessorNumber=0):
+    def _createEmptyJobWrapperForJob(self, jobStore, predecessorNumber=0):
         """
         Create an empty job for the job.
         """
         # set _config to determine user determined default values for resource requirements
         self._config = jobStore.config
-        return jobStore.create(command=command, predecessorNumber=predecessorNumber,
-                               cores=self.cores, disk=self.disk, memory=self.memory,
-                               preemptable=self.preemptable, name=self.name, job=self.job)
+        return jobStore.create(IssuableJob.fromJob(self, jobStoreLocator=jobStore.config.jobStore,
+                                                   predecessorNumber=predecessorNumber))
 
     def _makeJobWrappers(self, jobWrapper, jobStore):
         """
@@ -931,9 +1008,7 @@ class Job(ResourceRequirementMixin):
         #The predecessorID is used to establish which predecessors have been
         #completed before running the given Job - it is just a unique ID
         #per predecessor
-        return (jobWrapper.jobStoreID, jobWrapper.memory, jobWrapper.cores,
-                jobWrapper.disk, jobWrapper.preemptable,
-                None if jobWrapper.predecessorNumber <= 1 else str(uuid.uuid4()))
+        return IssuableJob.fromJobWrapper(jobWrapper)
 
     def getTopologicalOrderingOfJobs(self):
         """
@@ -1094,7 +1169,7 @@ class Job(ResourceRequirementMixin):
         :param toil.jobStores.abstractJobStore.AbstractJobStore jobStore:
         """
         # Create first jobWrapper
-        jobWrapper = self._createEmptyJobWrapperForJob(jobStore, None, predecessorNumber=0)
+        jobWrapper = self._createEmptyJobWrapperForJob(jobStore=jobStore, predecessorNumber=0)
         # Write the graph of jobs to disk
         self._serialiseJobGraph(jobWrapper, jobStore, None, True)
         jobStore.update(jobWrapper)
