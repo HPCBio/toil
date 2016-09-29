@@ -169,7 +169,7 @@ class JobLikeObject(ResourceRequirementMixin):
 class IssuableJob(JobLikeObject):
 
     def __init__(self, memory, cores, disk, preemptable, job, name, jobStoreID,
-                 jobStoreLocator, predecessorID=None, predecessorNumber=None):
+                 command, predecessorID=None, predecessorNumber=None):
         # check what predecessorID is used for
         assert predecessorID is not None or predecessorNumber is not None
         assert not (predecessorNumber and predecessorID)
@@ -179,15 +179,15 @@ class IssuableJob(JobLikeObject):
         self.predecessorID = None if predecessorNumber is not None and predecessorNumber<= 1 \
             else predecessorID
         self.predecessorNumber = predecessorNumber
-        self.jobStoreLocator = jobStoreLocator
+        self.command = command
 
     @property
-    def command(self):
+    def commalnd(self):
         if self.jobStoreID is not None:
             # created by fromJob
-            #assert inspect.currentframe().f_back().
-            return ' '.join(
-                (resolveEntryPoint('_toil_worker'), self.jobStoreLocator, self.jobStoreID))
+            # assert inspect.currentframe().f_back().
+            pass
+        return None
 
     # Serialization support methods
 
@@ -230,17 +230,17 @@ class IssuableJob(JobLikeObject):
         return cls(jobStoreID=jobWrapper.jobStoreID, memory=jobWrapper.memory,
                    cores=jobWrapper.cores, disk=jobWrapper.disk,
                    preemptable=jobWrapper.preemptable,
-                   jobStoreLocator=jobWrapper.jobStoreLocator,
+                   command=jobWrapper.command,
                    job=jobWrapper.job,
                    name=jobWrapper.name,
                    predecessorNumber=jobWrapper.predecessorNumber)
 
     @classmethod
-    def fromJob(cls, job, jobStoreLocator, predecessorNumber):
+    def fromJob(cls, job, command, predecessorNumber):
         return cls(jobStoreID=None, memory=job.memory,
                    cores=job.cores, disk=job.disk,
                    preemptable=job.preemptable,
-                   jobStoreLocator=jobStoreLocator,
+                   command=command,
                    job=job.job,
                    name=job.name,
                    predecessorNumber=predecessorNumber)
@@ -971,13 +971,13 @@ class Job(JobLikeObject):
     #a job graph to the jobStore
     ####################################################
 
-    def _createEmptyJobWrapperForJob(self, jobStore, predecessorNumber=0):
+    def _createEmptyJobWrapperForJob(self, jobStore, command=None, predecessorNumber=0):
         """
         Create an empty job for the job.
         """
         # set _config to determine user determined default values for resource requirements
         self._config = jobStore.config
-        return jobStore.create(IssuableJob.fromJob(self, jobStoreLocator=jobStore.config.jobStore,
+        return jobStore.create(IssuableJob.fromJob(self, command=command,
                                                    predecessorNumber=predecessorNumber))
 
     def _makeJobWrappers(self, jobWrapper, jobStore):
