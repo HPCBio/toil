@@ -752,8 +752,8 @@ def innerLoop(jobStore, config, batchSystem, toilState, jobBatcher, serviceManag
 
             for jobWrapper, resultStatus in updatedJobs:
 
-                logger.debug('Updating status of job: %s with result status: %s',
-                             jobWrapper.jobStoreID, resultStatus)
+                logger.debug('Updating status of job with ID %s: %s %s with result status: %s',
+                             jobWrapper.jobStoreID, jobWrapper.job, jobWrapper.name, resultStatus)
 
                 # This stops a job with services being issued by the serviceManager from
                 # being considered further in this loop. This catch is necessary because
@@ -780,7 +780,8 @@ def innerLoop(jobStore, config, batchSystem, toilState, jobBatcher, serviceManag
                     # If the job has non-service jobs running wait for them to finish
                     # the job will be re-added to the updated jobs when these jobs are done
                     elif jobWrapper.jobStoreID in toilState.successorCounts:
-                        logger.debug("Job: %s with failed successors still has successor jobs running", jobWrapper.jobStoreID)
+                        logger.debug("Job %s %s with ID: %s with failed successors still has successor jobs running",
+                                     jobWrapper.job, jobWrapper.name, jobWrapper.jobStoreID)
                         continue
 
                     # If the job is a checkpoint and has remaining retries then reissue it.
@@ -807,7 +808,8 @@ def innerLoop(jobStore, config, batchSystem, toilState, jobBatcher, serviceManag
                     if (jobWrapper.remainingRetryCount == 0
                         or isServiceJob and not jobStore.fileExists(jobWrapper.errorJobStoreID)):
                         jobBatcher.processTotallyFailedJob(jobWrapper)
-                        logger.warn("Job: %s is completely failed", jobWrapper.jobStoreID)
+                        logger.warn("Job %s %s with ID %s is completely failed",
+                                    jobWrapper.job, jobWrapper.name, jobWrapper.jobStoreID)
                     else:
                         # Otherwise try the job again
                         jobBatcher.issueJob(jobWrapper.jobStoreID, jobWrapper.memory,

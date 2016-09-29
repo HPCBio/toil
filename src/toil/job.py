@@ -47,12 +47,20 @@ class ResourceRequirementMixin(object):
     If the object doesn't specify explicit requirements, these properties will fall back
     to the configured defaults. If the value cannot be determined, an AttributeError is raised.
     """
-    def __init__(self, memory=None, cores=None, disk=None, preemptable=None):
+    def __init__(self, memory=None, cores=None, disk=None, preemptable=None, name=None):
         self._cores = self._parseResource('cores', cores)
         self._memory = self._parseResource('memory', memory)
         self._disk = self._parseResource('disk', disk)
         self._preemptable = preemptable
+        self._name = name
         self._config = None
+
+    @property
+    def name(self):
+        """
+        A user specified name for the job to improve debugging
+        """
+        return self._name
 
     @property
     def disk(self):
@@ -110,7 +118,8 @@ class ResourceRequirementMixin(object):
         return {'memory':getattr(self, 'memory', None),
                 'cores': getattr(self, 'cores', None),
                 'disk': getattr(self, 'disk', None),
-                'preemptable': getattr(self, 'preemptable', None)}
+                'preemptable': getattr(self, 'preemptable', None),
+                'name': getattr(self, 'name')}
 
     @staticmethod
     def _parseResource(name, value):
@@ -179,7 +188,7 @@ class Job(ResourceRequirementMixin):
         :type cache: int or string convertable by bd2k.util.humanize.human2bytes to an int
         :type memory: int or string convertable by bd2k.util.humanize.human2bytes to an int
         """
-        super(Job, self).__init__(memory=memory, cores=cores, disk=disk, preemptable=preemptable)
+        super(Job, self).__init__(memory=memory, cores=cores, disk=disk, preemptable=preemptable, name=name)
         self.checkpoint = checkpoint
         #Private class variables
 
@@ -204,7 +213,6 @@ class Job(ResourceRequirementMixin):
         self._rvs = collections.defaultdict(list)
         self._promiseJobStore = None
         self.job = self.__class__.__name__
-        self.name = name
 
     def run(self, fileStore):
         """
@@ -653,11 +661,10 @@ class Job(ResourceRequirementMixin):
             Memory, core and disk requirements are specified identically to as in \
             :func:`toil.job.Job.__init__`.
             """
-            super(Job.Service, self).__init__(memory=memory, cores=cores, disk=disk, preemptable=preemptable)
+            super(Job.Service, self).__init__(memory=memory, cores=cores, disk=disk, preemptable=preemptable, name=name)
             self._childServices = []
             self._hasParent = False
             self.job = self.__class__.__name__
-            self.name = name
 
         @abstractmethod
         def start(self, fileStore):
@@ -894,7 +901,7 @@ class Job(ResourceRequirementMixin):
         self._config = jobStore.config
         return jobStore.create(command=command, predecessorNumber=predecessorNumber,
                                cores=self.cores, disk=self.disk, memory=self.memory,
-                               preemptable=self.preemptable)
+                               preemptable=self.preemptable, name=self.name, job=self.job)
 
     def _makeJobWrappers(self, jobWrapper, jobStore):
         """
@@ -1378,7 +1385,7 @@ class ServiceJob(Job):
         :param service: The service to wrap in a job.
         :type service: toil.job.Job.Service
         """
-        Job.__init__(self, name=service.name, **service._requirements)
+        Job.__init__(self, **service._requirements)
         # service.__module__ is the module defining the class service is an instance of.
         self.serviceModule = ModuleDescriptor.forModule(service.__module__).globalize()
 
