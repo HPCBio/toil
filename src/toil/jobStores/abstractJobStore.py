@@ -460,7 +460,7 @@ class AbstractJobStore(object):
             reachableFromRoot.add(jobWrapper.jobStoreID)
             # Traverse jobs in stack
             for jobs in jobWrapper.stack:
-                for successorJobStoreID in map(lambda x: x[0], jobs):
+                for successorJobStoreID in map(lambda x: x.jobStoreID, jobs):
                     if (successorJobStoreID not in reachableFromRoot
                         and haveJob(successorJobStoreID)):
                         getConnectedJobs(getJob(successorJobStoreID))
@@ -511,7 +511,7 @@ class AbstractJobStore(object):
                 stackSizeFn = lambda: sum(map(len, jobWrapper.stack))
                 startStackSize = stackSizeFn()
                 # Remove deleted jobs
-                jobWrapper.stack = map(lambda x: filter(lambda y: self.exists(y[0]), x),
+                jobWrapper.stack = map(lambda x: filter(lambda y: self.exists(y.jobStoreID), x),
                                        jobWrapper.stack)
                 # Remove empty stuff from the stack
                 jobWrapper.stack = filter(lambda x: len(x) > 0, jobWrapper.stack)

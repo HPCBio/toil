@@ -26,7 +26,7 @@ class JobWrapper( IssuableJob ):
     scripts is persisted separately since it may be much bigger than the state managed by this
     class and should therefore only be held in memory for brief periods of time.
     """
-    def __init__( self, jobStoreLocator, memory, cores, disk, name, job, preemptable,
+    def __init__( self, command, memory, cores, disk, name, job, preemptable,
                   jobStoreID, remainingRetryCount, predecessorNumber,
                   filesToDelete=None, predecessorsFinished=None, 
                   stack=None, services=None, 
@@ -36,7 +36,7 @@ class JobWrapper( IssuableJob ):
                   checkpoint=None,
                   checkpointFilesToDelete=None ):
 
-        super(JobWrapper, self).__init__(jobStoreLocator=jobStoreLocator, memory=memory, cores=cores, disk=disk,
+        super(JobWrapper, self).__init__(command=command, memory=memory, cores=cores, disk=disk,
                                          name=name, preemptable=preemptable, jobStoreID=jobStoreID,
                                          job=job, predecessorNumber=predecessorNumber)
 
@@ -90,11 +90,16 @@ class JobWrapper( IssuableJob ):
 
     @classmethod
     def _filterArgDict(cls, d):
+        # make all these non constructor args properties?
+        # only have to filter on _
+        # or maybe inner class for state
         d = super(JobWrapper, cls)._filterArgDict(d)
         for key, value in dict(d).iteritems():
             if key == 'predecessorID':
                 del d[key]
             if key == 'config':
+                del d[key]
+            if key == 'batchSystemID':
                 del d[key]
         return d
 
@@ -111,7 +116,7 @@ class JobWrapper( IssuableJob ):
         # case this was a malloc failure (we do this because of the combined
         # batch system)
         if self.memory < config.defaultMemory:
-            self.memory = config.defaultMemory
+            self._memory = config.defaultMemory
             logger.warn("We have increased the default memory of the failed job to %s bytes",
                         self.memory)
 

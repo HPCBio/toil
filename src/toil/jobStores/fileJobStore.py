@@ -16,7 +16,7 @@ from __future__ import absolute_import
 
 from contextlib import contextmanager
 import logging
-import marshal as pickler
+import pickle as pickler
 import random
 import shutil
 import os
@@ -89,7 +89,7 @@ class FileJobStore(AbstractJobStore):
         # Sub directory to put temporary files associated with the job in
         os.mkdir(os.path.join(absJobDir, "g"))
         # Make the job
-        job = JobWrapper(jobStoreLocator=issuableJob.jobStoreLocator, memory=issuableJob.memory,
+        job = JobWrapper(command=issuableJob.command, memory=issuableJob.memory,
                          cores=issuableJob.cores, disk=issuableJob.disk,
                          preemptable=issuableJob.preemptable,
                          jobStoreID=self._getRelativePath(absJobDir),

@@ -82,7 +82,7 @@ class SingleMachineBatchSystem(BatchSystemSupport):
         # A dictionary mapping IDs of submitted jobs to the command line
         self.jobs = {}
         """
-        :type: dict[str,str]
+        :type: dict[str,toil.job.IssuableJob]
         """
         # A queue of jobs waiting to be executed. Consumed by the workers.
         self.inputQueue = Queue()
@@ -229,7 +229,7 @@ class SingleMachineBatchSystem(BatchSystemSupport):
         with self.jobIndexLock:
             jobID = self.jobIndex
             self.jobIndex += 1
-        self.jobs[jobID] = issuableJob.command
+        self.jobs[jobID] = issuableJob
         self.inputQueue.put((issuableJob.command, jobID, cores, issuableJob.memory,
                              issuableJob.disk, self.environment.copy()))
         return jobID

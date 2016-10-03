@@ -143,7 +143,10 @@ class JobBatcher:
         Add a job to the queue of jobs
         """
         self.jobsIssued += 1
+        issueableJob.command = ' '.join((resolveEntryPoint('_toil_worker'),
+                                         self.config.jobStore, issueableJob.jobStoreID))
         jobBatchSystemID = self.batchSystem.issueBatchJob(issueableJob)
+        issueableJob.run(jobBatchSystemID)
         self.jobBatchSystemIDToIssuedJob[jobBatchSystemID] = issueableJob
         logger.debug("Issued job with job store ID: %s and job batch system ID: "
                      "%s and cores: %.2f, disk: %.2f, and memory: %.2f",
@@ -462,8 +465,8 @@ class ToilState( object ):
 
         else: # There exist successors
             self.successorCounts[jobWrapper.jobStoreID] = len(jobWrapper.stack[-1])
-            for successorJobStoreTuple in jobWrapper.stack[-1]:
-                successorJobStoreID = successorJobStoreTuple[0]
+            for successorIssuedJob in jobWrapper.stack[-1]:
+                successorJobStoreID = successorIssuedJob.jobStoreID
                 if successorJobStoreID not in self.successorJobStoreIDToPredecessorJobs:
                     #Given that the successor jobWrapper does not yet point back at a
                     #predecessor we have not yet considered it, so we call the function
@@ -751,8 +754,8 @@ def innerLoop(jobStore, config, batchSystem, toilState, jobBatcher, serviceManag
 
             for jobWrapper, resultStatus in updatedJobs:
 
-                logger.debug('Updating status of job with ID %s: %s %s with result status: %s',
-                             jobWrapper.jobStoreID, jobWrapper.job, jobWrapper.name, resultStatus)
+                logger.debug('Updating status of job %s with ID %s: with result status: %s',
+                             jobWrapper, jobWrapper.jobStoreID, resultStatus)
 
                 # This stops a job with services being issued by the serviceManager from
                 # being considered further in this loop. This catch is necessary because

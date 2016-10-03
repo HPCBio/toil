@@ -165,11 +165,13 @@ class JobLikeObject(ResourceRequirementMixin):
         self.name = name
         self.job = job or self.__class__.__name__
 
-
 class IssuableJob(JobLikeObject):
-
+    """
+    This object bridges the jobwrapper, job, and batchsystem classes. This polymorphism
+    creates some unpleasant complexity.
+    """
     def __init__(self, memory, cores, disk, preemptable, job, name, jobStoreID,
-                 command, predecessorID=None, predecessorNumber=None):
+                 command, batchSystemID=None, predecessorID=None, predecessorNumber=None):
         # check what predecessorID is used for
         assert predecessorID is not None or predecessorNumber is not None
         assert not (predecessorNumber and predecessorID)
@@ -180,6 +182,10 @@ class IssuableJob(JobLikeObject):
             else predecessorID
         self.predecessorNumber = predecessorNumber
         self.command = command
+        self.batchSystemID = None
+
+    def run(self, batchSystemID):
+        self.batchSystemID = batchSystemID
 
     @property
     def commalnd(self):
@@ -223,7 +229,7 @@ class IssuableJob(JobLikeObject):
         return '%s( **%r )' % (self.__class__.__name__, self.__dict__)
 
     def __str__(self):
-        return str(self.toDict())
+        return str('\''+self.job + '\' '+self.name)
 
     @classmethod
     def fromJobWrapper(cls, jobWrapper):
@@ -250,7 +256,7 @@ class Job(JobLikeObject):
     """
     Class represents a unit of work in toil.
     """
-    def __init__(self, memory=None, cores=None, disk=None, preemptable=None, name=None, checkpoint=False):
+    def __init__(self, memory=None, cores=None, disk=None, preemptable=None, name='', checkpoint=False):
         """
         This method must be called by any overriding constructor.
         
@@ -735,7 +741,7 @@ class Job(JobLikeObject):
         Abstract class used to define the interface to a service.
         """
         __metaclass__ = ABCMeta
-        def __init__(self, memory=None, cores=None, disk=None, preemptable=None, name=None):
+        def __init__(self, memory=None, cores=None, disk=None, preemptable=None, name=''):
             """
             Memory, core and disk requirements are specified identically to as in \
             :func:`toil.job.Job.__init__`.
@@ -1307,7 +1313,7 @@ class FunctionWrappingJob(Job):
                             (human2bytes(str(argDict[x])) if x in argDict.keys() else None)
         self.userFunctionName = str(userFunction.__name__)
         nameFn = lambda y: kwargs.pop(y) if y in kwargs else \
-                            (argDict[y]) if y in argDict.keys() else None
+                            (argDict[y]) if y in argDict.keys() else ''
         Job.__init__(self, memory=argFn("memory"), cores=argFn("cores"),
                      disk=argFn("disk"), preemptable=argFn("preemptable"), name=nameFn('name'),
                      checkpoint=kwargs.pop("checkpoint") if "checkpoint" in kwargs else False)
