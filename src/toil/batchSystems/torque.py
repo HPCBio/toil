@@ -1,4 +1,4 @@
-# Copyright (C) 2015-2016 Regents of the University of California
+# Copyright (C) 2015 UCSC Computational Genomics Lab
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,15 +19,20 @@ from pipes import quote
 import subprocess
 import time
 import math
+import sys
+import xml.etree.ElementTree as ET
+import tempfile
+
 from Queue import Queue, Empty
 from threading import Thread
 
 from toil.batchSystems import MemoryString
 from toil.batchSystems.abstractGridEngineBatchSystem import AbstractGridEngineBatchSystem
 
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-class GridEngineWorker(Thread):
+class TorqueWorker(Thread):
     def __init__(self, newJobsQueue, updatedJobsQueue, killQueue, killedJobsQueue, boss):
         Thread.__init__(self)
         self.newJobsQueue = newJobsQueue
@@ -38,29 +43,37 @@ class GridEngineWorker(Thread):
         self.runningJobs = set()
         self.boss = boss
         self.allocatedCpus = dict()
-        self.sgeJobIDs = dict()
+        self.torqueJobIDs = dict()
 
     def getRunningJobIDs(self):
         times = {}
-        currentjobs = dict((str(self.sgeJobIDs[x][0]), x) for x in self.runningJobs)
+        currentjobs = dict((str(self.torqueJobIDs[x][0]), x) for x in self.runningJobs)
         process = subprocess.Popen(["qstat"], stdout=subprocess.PIPE)
         stdout, stderr = process.communicate()
 
+        # TODO: qstat supports XML output which is more comprehensive, so maybe use that?
         for currline in stdout.split('\n'):
             items = currline.strip().split()
             if items:
-                if items[0] in currentjobs and items[4] == 'r':
-                    jobstart = " ".join(items[5:7])
-                    jobstart = time.mktime(time.strptime(jobstart, "%m/%d/%Y %H:%M:%S"))
-                    times[currentjobs[items[0]]] = time.time() - jobstart
+                jobid = items[0].strip().split('.')[0]
+                if jobid in currentjobs and items[4] == 'R':
+                    walltime = items[3]
+                    # normal qstat has a quirk with job time where it reports '0'
+                    # when initially running; this catches this case
+                    if walltime == '0':
+                        logger.debug("JobID:" + jobid + ", time:" + walltime)
+                        walltime = time.mktime(time.strptime(walltime, "%S"))                        
+                    else:
+                        walltime = time.mktime(time.strptime(walltime, "%H:%M:%S"))
+                    times[currentjobs[jobid]] = walltime
 
         return times
 
-    def getSgeID(self, jobID):
-        if not jobID in self.sgeJobIDs:
+    def getTorqueID(self, jobID):
+        if not jobID in self.torqueJobIDs:
             RuntimeError("Unknown jobID, could not be converted")
 
-        (job, task) = self.sgeJobIDs[jobID]
+        (job, task) = self.torqueJobIDs[jobID]
         if task is None:
             return str(job)
         else:
@@ -69,7 +82,7 @@ class GridEngineWorker(Thread):
     def forgetJob(self, jobID):
         self.runningJobs.remove(jobID)
         del self.allocatedCpus[jobID]
-        del self.sgeJobIDs[jobID]
+        del self.torqueJobIDs[jobID]
 
     def killJobs(self):
         # Load hit list:
@@ -89,7 +102,7 @@ class GridEngineWorker(Thread):
         for jobID in list(killList):
             if jobID in self.runningJobs:
                 logger.debug('Killing job: %s', jobID)
-                subprocess.check_call(['qdel', self.getSgeID(jobID)])
+                subprocess.check_call(['qdel', self.getTorqueID(jobID)])
             else:
                 if jobID in self.waitingJobs:
                     self.waitingJobs.remove(jobID)
@@ -99,7 +112,7 @@ class GridEngineWorker(Thread):
         # Wait to confirm the kill
         while killList:
             for jobID in list(killList):
-                if self.getJobExitCode(self.sgeJobIDs[jobID]) is not None:
+                if self.getJobExitCode(self.torqueJobIDs[jobID]) is not None:
                     logger.debug('Adding jobID %s to killedJobsQueue', jobID)
                     self.killedJobsQueue.put(jobID)
                     killList.remove(jobID)
@@ -116,13 +129,13 @@ class GridEngineWorker(Thread):
         if newJob is not None:
             self.waitingJobs.append(newJob)
         # Launch jobs as necessary:
-        while (len(self.waitingJobs) > 0
-               and sum(self.allocatedCpus.values()) < int(self.boss.maxCores)):
+        while len(self.waitingJobs) > 0 and sum(self.allocatedCpus.values()) < int(
+                self.boss.maxCores):
             activity = True
             jobID, cpu, memory, command = self.waitingJobs.pop(0)
-            qsubline = self.prepareQsub(cpu, memory, jobID) + [command]
-            sgeJobID = self.qsub(qsubline)
-            self.sgeJobIDs[jobID] = (sgeJobID, None)
+            qsubline = self.prepareQsub(cpu, memory, jobID) + [self._generateTorqueWrapper(command)]
+            torqueJobIDs = self.qsub(qsubline)
+            self.torqueJobIDs[jobID] = (torqueJobIDs, None)
             self.runningJobs.add(jobID)
             self.allocatedCpus[jobID] = cpu
         return activity
@@ -131,7 +144,7 @@ class GridEngineWorker(Thread):
         activity = False
         logger.debug('List of running jobs: %r', self.runningJobs)
         for jobID in list(self.runningJobs):
-            status = self.getJobExitCode(self.sgeJobIDs[jobID])
+            status = self.getJobExitCode(self.torqueJobIDs[jobID])
             if status is not None:
                 activity = True
                 self.updatedJobsQueue.put((jobID, status))
@@ -156,97 +169,115 @@ class GridEngineWorker(Thread):
                 time.sleep(self.boss.sleepSeconds())
 
     def prepareQsub(self, cpu, mem, jobID):
-        qsubline = ['qsub', '-V', '-b', 'y', '-terse', '-j', 'y', '-cwd',
-                    '-N', 'toil_job_' + str(jobID)]
+        
+        # TODO: passing $PWD on command line not working for -d, resorting to
+        # $PBS_O_WORKDIR but maybe should fix this here instead of in script?
+        
+        # TODO: we previosuly trashed the stderr/stdout, as in the commented
+        # code, but these may be retained by others, particularly for debugging.
+        # Maybe an option or attribute w/ a location for storing the logs?
 
+        # qsubline = ['qsub', '-V', '-j', 'oe', '-o', '/dev/null',
+        #             '-e', '/dev/null', '-N', 'toil_job_{}'.format(jobID)]
+        
+        qsubline = ['qsub', '-V', '-N', 'toil_job_{}'.format(jobID)]
+                
         if self.boss.environment:
             qsubline.append('-v')
             qsubline.append(','.join(k + '=' + quote(os.environ[k] if v is None else v)
                                      for k, v in self.boss.environment.iteritems()))
-
+            
         reqline = list()
         if mem is not None:
             memStr = str(mem / 1024) + 'K'
-            reqline += ['vf=' + memStr, 'h_vmem=' + memStr]
-        if len(reqline) > 0:
-            qsubline.extend(['-hard', '-l', ','.join(reqline)])
-        sgeArgs = os.getenv('TOIL_GRIDENGINE_ARGS')
-        if sgeArgs:
-            sgeArgs = sgeArgs.split()
-            for arg in sgeArgs:
-                if arg.startswith(("vf=", "hvmem=", "-pe")):
-                    raise ValueError("Unexpected CPU, memory or pe specifications in TOIL_GRIDGENGINE_ARGs: %s" % arg)
-            qsubline.extend(sgeArgs)
+            reqline += ['-l mem=' + memStr]
+
         if cpu is not None and math.ceil(cpu) > 1:
-            peConfig = os.getenv('TOIL_GRIDENGINE_PE') or 'shm'
-            qsubline.extend(['-pe', peConfig, str(int(math.ceil(cpu)))])
+            qsubline.extend(['-l ncpus=' + str(int(math.ceil(cpu)))])
+        
         return qsubline
+    
 
     def qsub(self, qsubline):
-        logger.debug("Running %r", " ".join(qsubline))
+        logger.debug("Running %r", ' '.join(qsubline))
         process = subprocess.Popen(qsubline, stdout=subprocess.PIPE)
-        result = int(process.stdout.readline().strip().split('.')[0])
+        so, se = process.communicate()
+        # TODO: the full URI here may be needed on complex setups, stripping
+        # down to integer job ID only may be bad long-term
+        result = int(so.strip().split('.')[0])
+        logger.debug("Result %r", result)
         return result
 
-    def getJobExitCode(self, sgeJobID):
-        job, task = sgeJobID
-        args = ["qacct", "-j", str(job)]
-        if task is not None:
-            args.extend(["-t", str(task)])
-        logger.debug("Running %r", args)
+    def getJobExitCode(self, torqueJobID):
+        job, task = torqueJobID
+        args = ["qstat", "-f", str(job)]
+
         process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         for line in process.stdout:
+            line = line.strip()
+            # logger.debug("Line: " + line)
             if line.startswith("failed") and int(line.split()[1]) == 1:
                 return 1
-            elif line.startswith("exit_status"):
-                logger.debug('Exit Status: %r', line.split()[1])
-                return int(line.split()[1])
+            if line.startswith("exit_status"):
+                status = line.split(' = ')[1]
+                logger.debug('Exit Status: ' + status)
+                return int(status)
         return None
+    
+    def _generateTorqueWrapper(self, command):
+        """
+        A very simple script generator that just wraps the command given; for
+        now this goes to default tempdir
+        """
+        _, tmpFile = tempfile.mkstemp(suffix='.sh', prefix='torque_wrapper')
+        fh = open(tmpFile , 'w')
+        fh.write("$!/bin/bash\n\n")
+        fh.write("cd $PBS_O_WORKDIR\n\n")
+        fh.write(command + "\n")
+        fh.close
+        return tmpFile    
 
-
-class GridEngineBatchSystem(AbstractGridEngineBatchSystem):
+class TorqueBatchSystem(AbstractGridEngineBatchSystem):
     """
-    The interface for SGE aka Sun GridEngine.
+    The interface for PBS/Torque
     """
-
+    
     @classmethod
     def workerClass(self):
-        return GridEngineWorker
-
-    @classmethod
-    def getWaitDuration(self):
-        return 0.0
+        return TorqueWorker
 
     @staticmethod
     def obtainSystemConstants():
-        lines = filter(None, map(str.strip, subprocess.check_output(["qhost"]).split('\n')))
-        line = lines[0]
-        items = line.strip().split()
-        num_columns = len(items)
-        cpu_index = None
-        mem_index = None
-        for i in range(num_columns):
-            if items[i] == 'NCPU':
-                cpu_index = i
-            elif items[i] == 'MEMTOT':
-                mem_index = i
-        if cpu_index is None or mem_index is None:
-            RuntimeError('qhost command does not return NCPU or MEMTOT columns')
+
         maxCPU = 0
-        maxMEM = MemoryString("0")
-        for line in lines[2:]:
-            items = line.strip().split()
-            if len(items) < num_columns:
-                RuntimeError('qhost output has a varying number of columns')
-            if items[cpu_index] != '-' and items[cpu_index] > maxCPU:
-                maxCPU = items[cpu_index]
-            if items[mem_index] != '-' and MemoryString(items[mem_index]) > maxMEM:
-                maxMEM = MemoryString(items[mem_index])
-        if maxCPU is 0 or maxMEM is 0:
-            RuntimeError('qhost returned null NCPU or MEMTOT info')
+        maxMEM = MemoryString("0K")
+
+        # parse XML output from pbsnodes
+        root = ET.fromstring(subprocess.check_output(["pbsnodes","-x"]))
+
+        # for each node, grab status line
+        for node in root.findall('./Node/status'):
+            # then split up the status line by comma and iterate
+            status = {}
+            for state in node.text.split(","):
+                statusType, statusState = state.split("=")
+                status[statusType] = statusState
+            if status['ncpus'] is None or status['totmem'] is None:
+                RuntimeError("pbsnodes command does not return ncpus or totmem columns")
+            if status['ncpus'] > maxCPU:
+                maxCPU = status['ncpus']
+            if MemoryString(status['totmem']) > maxMEM:
+                maxMEM = MemoryString(status['totmem'])
+
+        if maxCPU is 0 or maxMEM is MemoryString("0K"):
+            RuntimeError('pbsnodes returned null ncpus or totmem info')
+        else:
+            logger.info("Got maxCPU: %s and maxMEM: %s" % (maxCPU, maxMEM, ))
+
         return maxCPU, maxMEM
 
     def setEnv(self, name, value=None):
         if value and ',' in value:
-            raise ValueError("GridEngine does not support commata in environment variable values")
-        return super(GridEngineBatchSystem,self).setEnv(name, value)
+            raise ValueError("Torque does not support commata in environment variable values")
+        return super(TorqueBatchSystem,self).setEnv(name, value)
+

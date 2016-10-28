@@ -42,6 +42,7 @@ from toil.test import (ToilTest,
                        needs_parasol,
                        needs_gridengine,
                        needs_slurm,
+                       needs_torque,
                        tempFileContaining)
 
 log = logging.getLogger(__name__)
@@ -550,13 +551,13 @@ class GridEngineBatchSystemTest(hidden.AbstractBatchSystemTest):
         return config
 
     def createBatchSystem(self):
-        from toil.batchSystems.gridengine import GridengineBatchSystem
-        return GridengineBatchSystem(config=self.config, maxCores=numCores, maxMemory=1000e9,
+        from toil.batchSystems.gridengine import GridEngineBatchSystem
+        return GridEngineBatchSystem(config=self.config, maxCores=numCores, maxMemory=1000e9,
                                      maxDisk=1e9)
 
     def tearDown(self):
         super(GridEngineBatchSystemTest, self).tearDown()
-        # Cleanup Gridengine output log file from qsub
+        # Cleanup GridEngine output log file from qsub
         from glob import glob
         for f in glob('toil_job*.o*'):
             os.unlink(f)
@@ -585,6 +586,27 @@ class SlurmBatchSystemTest(hidden.AbstractBatchSystemTest):
         for f in glob('slurm-*.out'):
             os.unlink(f)
 
+@needs_torque
+class TorqueBatchSystemTest(hidden.AbstractBatchSystemTest):
+    """
+    Tests against the Torque batch system
+    """
+
+    def _createDummyConfig(self):
+        config = super(TorqueBatchSystemTest, self)._createDummyConfig()
+        # can't use _getTestJobStorePath since that method removes the directory
+        config.jobStore = self._createTempDir('jobStore')
+        return config
+
+    def createBatchSystem(self):
+        from toil.batchSystems.torque import TorqueBatchSystem
+        return TorqueBatchSystem(config=self.config, maxCores=numCores, maxMemory=1000e9,
+                                     maxDisk=1e9)
+    
+    @classmethod
+    def setUpClass(cls):
+        super(TorqueBatchSystemTest, cls).setUpClass()
+        logging.basicConfig(level=logging.DEBUG)
 
 class SingleMachineBatchSystemJobTest(hidden.AbstractBatchSystemJobTest):
     """

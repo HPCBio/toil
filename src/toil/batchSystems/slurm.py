@@ -23,14 +23,11 @@ from Queue import Queue, Empty
 from threading import Thread
 
 from toil.batchSystems import MemoryString
-from toil.batchSystems.abstractBatchSystem import BatchSystemSupport
+from toil.batchSystems.abstractGridEngineBatchSystem import AbstractGridEngineBatchSystem
 
 logger = logging.getLogger(__name__)
 
-sleepSeconds = 1
-
-
-class Worker(Thread):
+class SlurmWorker(Thread):
     def __init__(self, newJobsQueue, updatedJobsQueue, killQueue, killedJobsQueue, boss):
         Thread.__init__(self)
         self.newJobsQueue = newJobsQueue
@@ -127,8 +124,8 @@ class Worker(Thread):
                     killList.remove(jobID)
                     self.forgetJob(jobID)
             if len(killList) > 0:
-                logger.warn("Some jobs weren't killed, trying again in %is.", sleepSeconds)
-                time.sleep(sleepSeconds)
+                logger.warn("Some jobs weren't killed, trying again in %is.", self.boss.sleepSeconds())
+                time.sleep(self.boss.sleepSeconds())
 
         return True
 
@@ -175,8 +172,8 @@ class Worker(Thread):
             activity |= self.createJobs(newJob)
             activity |= self.checkOnJobs()
             if not activity:
-                logger.debug('No activity, sleeping for %is', sleepSeconds)
-                time.sleep(sleepSeconds)
+                logger.debug('No activity, sleeping for %is', self.boss.sleepSeconds())
+                time.sleep(self.boss.sleepSeconds())
 
     def prepareSbatch(self, cpu, mem, jobID):
         #  Returns the sbatch command line before the script to run
@@ -245,106 +242,18 @@ class Worker(Thread):
         return None
 
 
-class SlurmBatchSystem(BatchSystemSupport):
+class SlurmBatchSystem(AbstractGridEngineBatchSystem):
     """
     The interface for SLURM
     """
+    
+    @classmethod
+    def workerClass(self):
+        return SlurmWorker
 
     @classmethod
-    def supportsWorkerCleanup(cls):
-        return False
-
-    @classmethod
-    def supportsHotDeployment(cls):
-        return False
-
-    def __init__(self, config, maxCores, maxMemory, maxDisk):
-        super(SlurmBatchSystem, self).__init__(config, maxCores, maxMemory, maxDisk)
-        self.slurmResultsFile = self._getResultsFileName(config.jobStore)
-        # Reset the job queue and results (initially, we do this again once we've killed the jobs)
-        self.slurmResultsFileHandle = open(self.slurmResultsFile, 'w')
-        # We lose any previous state in this file, and ensure the files existence
-        self.slurmResultsFileHandle.close()
-        self.currentJobs = set()
-        self.maxCPU, self.maxMEM = self.obtainSystemConstants()
-        self.nextJobID = 0
-        self.newJobsQueue = Queue()
-        self.updatedJobsQueue = Queue()
-        self.killQueue = Queue()
-        self.killedJobsQueue = Queue()
-        self.worker = Worker(self.newJobsQueue, self.updatedJobsQueue, self.killQueue,
-                             self.killedJobsQueue, self)
-        self.worker.start()
-
-    def __des__(self):
-        # Closes the file handle associated with the results file.
-        self.slurmResultsFileHandle.close()
-
-    def issueBatchJob(self, command, memory, cores, disk, preemptable):
-        self.checkResourceRequest(memory, cores, disk)
-        jobID = self.nextJobID
-        self.nextJobID += 1
-        self.currentJobs.add(jobID)
-        self.newJobsQueue.put((jobID, cores, memory, command))
-        logger.debug("Issued the job command: %s with job id: %s ", command, str(jobID))
-        return jobID
-
-    def killBatchJobs(self, jobIDs):
-        """
-        Kills the given jobs, represented as Job ids, then checks they are dead by checking
-        they are not in the list of issued jobs.
-        """
-        jobIDs = set(jobIDs)
-        logger.debug('Jobs to be killed: %r', jobIDs)
-        for jobID in jobIDs:
-            self.killQueue.put(jobID)
-        while jobIDs:
-            killedJobId = self.killedJobsQueue.get()
-            if killedJobId is None:
-                break
-            jobIDs.remove(killedJobId)
-            if killedJobId in self.currentJobs:
-                self.currentJobs.remove(killedJobId)
-            if jobIDs:
-                logger.debug('Some kills (%s) still pending, sleeping %is', len(jobIDs),
-                             sleepSeconds)
-                time.sleep(sleepSeconds)
-
-    def getIssuedBatchJobIDs(self):
-        """
-        Gets the list of jobs issued to SLURM.
-        """
-        return list(self.currentJobs)
-
-    def getRunningBatchJobIDs(self):
-        return self.worker.getRunningJobIDs()
-
-    def getUpdatedBatchJob(self, maxWait):
-        try:
-            item = self.updatedJobsQueue.get(timeout=maxWait)
-        except Empty:
-            return None
-        logger.debug('UpdatedJobsQueue Item: %s', item)
-        jobID, retcode = item
-        self.currentJobs.remove(jobID)
-        return jobID, retcode, None
-
-    def shutdown(self):
-        """
-        Signals worker to shutdown (via sentinel) then cleanly joins the thread
-        """
-        newJobsQueue = self.newJobsQueue
-        self.newJobsQueue = None
-
-        newJobsQueue.put(None)
-        self.worker.join()
-
     def getWaitDuration(self):
         return 1.0
-
-    @classmethod
-    def getRescueBatchJobFrequency(cls):
-        return 30 * 60 # Half an hour
 
     @staticmethod
     def obtainSystemConstants():
