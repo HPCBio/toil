@@ -24,225 +24,228 @@ from threading import Thread
 
 from toil.batchSystems import MemoryString
 from toil.batchSystems.abstractGridEngineBatchSystem import AbstractGridEngineBatchSystem
+from toil.batchSystems.abstractGridEngineWorker import AbstractGridEngineWorker
 
 logger = logging.getLogger(__name__)
 
-class SlurmWorker(Thread):
-    def __init__(self, newJobsQueue, updatedJobsQueue, killQueue, killedJobsQueue, boss):
-        Thread.__init__(self)
-        self.newJobsQueue = newJobsQueue
-        self.updatedJobsQueue = updatedJobsQueue
-        self.killQueue = killQueue
-        self.killedJobsQueue = killedJobsQueue
-        self.waitingJobs = list()
-        self.runningJobs = set()
-        self.boss = boss
-        self.allocatedCpus = dict()
-        self.slurmJobIDs = dict()
+class SlurmBatchSystem(AbstractGridEngineBatchSystem):
 
-    def parse_elapsed(self, elapsed):
-        # slurm returns elapsed time in days-hours:minutes:seconds format
-        # Sometimes it will only return minutes:seconds, so days may be omitted
-        # For ease of calculating, we'll make sure all the delimeters are ':'
-        # Then reverse the list so that we're always counting up from seconds -> minutes -> hours -> days
-        total_seconds = 0
-        try:
-            elapsed = elapsed.replace('-', ':').split(':')
-            elapsed.reverse()
-            seconds_per_unit = [1, 60, 3600, 86400]
-            for index, multiplier in enumerate(seconds_per_unit):
-                if index < len(elapsed):
-                    total_seconds += multiplier * int(elapsed[index])
-        except ValueError:
-            pass  # slurm may return INVALID instead of a time
-        return total_seconds
-
-    def getRunningJobIDs(self):
-        # Should return a dictionary of Job IDs and number of seconds
-        times = {}
-        currentjobs = dict((str(self.slurmJobIDs[x]), x) for x in self.runningJobs)
-        # currentjobs is a dictionary that maps a slurm job id (string) to our own internal job id
-        # squeue arguments:
-        # -h for no header
-        # --format to get jobid i, state %t and time days-hours:minutes:seconds
-
-        lines = subprocess.check_output(['squeue', '-h', '--format', '%i %t %M']).split('\n')
-        for line in lines:
-            values = line.split()
-            if len(values) < 3:
-                continue
-            slurm_jobid, state, elapsed_time = values
-            if slurm_jobid in currentjobs and state == 'R':
-                seconds_running = self.parse_elapsed(elapsed_time)
-                times[currentjobs[slurm_jobid]] = seconds_running
-
-        return times
-
-    def getSlurmID(self, jobID):
-        if not jobID in self.slurmJobIDs:
-            RuntimeError("Unknown jobID, could not be converted")
-
-        job = self.slurmJobIDs[jobID]
-        return str(job)
-
-    def forgetJob(self, jobID):
-        self.runningJobs.remove(jobID)
-        del self.allocatedCpus[jobID]
-        del self.slurmJobIDs[jobID]
-
-    def killJobs(self):
-        # Load hit list:
-        killList = list()
-        while True:
+    class Worker(AbstractGridEngineWorker):
+        
+        def __init__(self, newJobsQueue, updatedJobsQueue, killQueue, killedJobsQueue, boss):
+            Thread.__init__(self)
+            self.newJobsQueue = newJobsQueue
+            self.updatedJobsQueue = updatedJobsQueue
+            self.killQueue = killQueue
+            self.killedJobsQueue = killedJobsQueue
+            self.waitingJobs = list()
+            self.runningJobs = set()
+            self.boss = boss
+            self.allocatedCpus = dict()
+            self.batchJobIDs = dict()
+    
+        def parse_elapsed(self, elapsed):
+            # slurm returns elapsed time in days-hours:minutes:seconds format
+            # Sometimes it will only return minutes:seconds, so days may be omitted
+            # For ease of calculating, we'll make sure all the delimeters are ':'
+            # Then reverse the list so that we're always counting up from seconds -> minutes -> hours -> days
+            total_seconds = 0
             try:
-                jobId = self.killQueue.get(block=False)
-            except Empty:
-                break
-            else:
-                killList.append(jobId)
-
-        if not killList:
-            return False
-
-        # Do the dirty job
-        for jobID in list(killList):
-            if jobID in self.runningJobs:
-                logger.debug('Killing job: %s', jobID)
-                subprocess.check_call(['scancel', self.getSlurmID(jobID)])
-            else:
-                if jobID in self.waitingJobs:
-                    self.waitingJobs.remove(jobID)
-                self.killedJobsQueue.put(jobID)
-                killList.remove(jobID)
-
-        # Wait to confirm the kill
-        while killList:
+                elapsed = elapsed.replace('-', ':').split(':')
+                elapsed.reverse()
+                seconds_per_unit = [1, 60, 3600, 86400]
+                for index, multiplier in enumerate(seconds_per_unit):
+                    if index < len(elapsed):
+                        total_seconds += multiplier * int(elapsed[index])
+            except ValueError:
+                pass  # slurm may return INVALID instead of a time
+            return total_seconds
+    
+        def getRunningJobIDs(self):
+            # Should return a dictionary of Job IDs and number of seconds
+            times = {}
+            currentjobs = dict((str(self.batchJobIDs[x]), x) for x in self.runningJobs)
+            # currentjobs is a dictionary that maps a slurm job id (string) to our own internal job id
+            # squeue arguments:
+            # -h for no header
+            # --format to get jobid i, state %t and time days-hours:minutes:seconds
+    
+            lines = subprocess.check_output(['squeue', '-h', '--format', '%i %t %M']).split('\n')
+            for line in lines:
+                values = line.split()
+                if len(values) < 3:
+                    continue
+                slurm_jobid, state, elapsed_time = values
+                if slurm_jobid in currentjobs and state == 'R':
+                    seconds_running = self.parse_elapsed(elapsed_time)
+                    times[currentjobs[slurm_jobid]] = seconds_running
+    
+            return times
+    
+        def getSlurmID(self, jobID):
+            if not jobID in self.batchJobIDs:
+                RuntimeError("Unknown jobID, could not be converted")
+    
+            job = self.batchJobIDs[jobID]
+            return str(job)
+    
+        def forgetJob(self, jobID):
+            self.runningJobs.remove(jobID)
+            del self.allocatedCpus[jobID]
+            del self.batchJobIDs[jobID]
+    
+        def killJobs(self):
+            # Load hit list:
+            killList = list()
+            while True:
+                try:
+                    jobId = self.killQueue.get(block=False)
+                except Empty:
+                    break
+                else:
+                    killList.append(jobId)
+    
+            if not killList:
+                return False
+    
+            # Do the dirty job
             for jobID in list(killList):
-                if self.getJobExitCode(self.slurmJobIDs[jobID]) is not None:
-                    logger.debug('Adding jobID %s to killedJobsQueue', jobID)
+                if jobID in self.runningJobs:
+                    logger.debug('Killing job: %s', jobID)
+                    subprocess.check_call(['scancel', self.getSlurmID(jobID)])
+                else:
+                    if jobID in self.waitingJobs:
+                        self.waitingJobs.remove(jobID)
                     self.killedJobsQueue.put(jobID)
                     killList.remove(jobID)
-                    self.forgetJob(jobID)
-            if len(killList) > 0:
-                logger.warn("Some jobs weren't killed, trying again in %is.", self.boss.sleepSeconds())
-                time.sleep(self.boss.sleepSeconds())
-
-        return True
-
-    def createJobs(self, newJob):
-        activity = False
-        # Load new job id if present:
-        if newJob is not None:
-            self.waitingJobs.append(newJob)
-        # Launch jobs as necessary:
-        while (len(self.waitingJobs) > 0
-               and sum(self.allocatedCpus.values()) < int(self.boss.maxCores)):
-            activity = True
-            jobID, cpu, memory, command = self.waitingJobs.pop(0)
-            sbatch_line = self.prepareSbatch(cpu, memory, jobID) + ['--wrap={}'.format(command)]
-            slurmJobID = self.sbatch(sbatch_line)
-            self.slurmJobIDs[jobID] = slurmJobID
-            self.runningJobs.add(jobID)
-            self.allocatedCpus[jobID] = cpu
-        return activity
-
-    def checkOnJobs(self):
-        activity = False
-        logger.debug('List of running jobs: %r', self.runningJobs)
-        for jobID in list(self.runningJobs):
-            logger.debug("Checking status of internal job id %d", jobID)
-            status = self.getJobExitCode(self.slurmJobIDs[jobID])
-            if status is not None:
-                activity = True
-                self.updatedJobsQueue.put((jobID, status))
-                self.forgetJob(jobID)
-        return activity
-
-    def run(self):
-        while True:
+    
+            # Wait to confirm the kill
+            while killList:
+                for jobID in list(killList):
+                    if self.getJobExitCode(self.batchJobIDs[jobID]) is not None:
+                        logger.debug('Adding jobID %s to killedJobsQueue', jobID)
+                        self.killedJobsQueue.put(jobID)
+                        killList.remove(jobID)
+                        self.forgetJob(jobID)
+                if len(killList) > 0:
+                    logger.warn("Some jobs weren't killed, trying again in %is.", self.boss.sleepSeconds())
+                    time.sleep(self.boss.sleepSeconds())
+    
+            return True
+    
+        def createJobs(self, newJob):
             activity = False
-            newJob = None
-            if not self.newJobsQueue.empty():
+            # Load new job id if present:
+            if newJob is not None:
+                self.waitingJobs.append(newJob)
+            # Launch jobs as necessary:
+            while (len(self.waitingJobs) > 0
+                   and sum(self.allocatedCpus.values()) < int(self.boss.maxCores)):
                 activity = True
-                newJob = self.newJobsQueue.get()
-                if newJob is None:
-                    logger.debug('Received queue sentinel.')
-                    break
-            activity |= self.killJobs()
-            activity |= self.createJobs(newJob)
-            activity |= self.checkOnJobs()
-            if not activity:
-                logger.debug('No activity, sleeping for %is', self.boss.sleepSeconds())
-                time.sleep(self.boss.sleepSeconds())
+                jobID, cpu, memory, command = self.waitingJobs.pop(0)
+                sbatch_line = self.prepareSbatch(cpu, memory, jobID) + ['--wrap={}'.format(command)]
+                slurmJobID = self.sbatch(sbatch_line)
+                self.batchJobIDs[jobID] = slurmJobID
+                self.runningJobs.add(jobID)
+                self.allocatedCpus[jobID] = cpu
+            return activity
+    
+        def checkOnJobs(self):
+            activity = False
+            logger.debug('List of running jobs: %r', self.runningJobs)
+            for jobID in list(self.runningJobs):
+                logger.debug("Checking status of internal job id %d", jobID)
+                status = self.getJobExitCode(self.batchJobIDs[jobID])
+                if status is not None:
+                    activity = True
+                    self.updatedJobsQueue.put((jobID, status))
+                    self.forgetJob(jobID)
+            return activity
+    
+        def run(self):
+            while True:
+                activity = False
+                newJob = None
+                if not self.newJobsQueue.empty():
+                    activity = True
+                    newJob = self.newJobsQueue.get()
+                    if newJob is None:
+                        logger.debug('Received queue sentinel.')
+                        break
+                activity |= self.killJobs()
+                activity |= self.createJobs(newJob)
+                activity |= self.checkOnJobs()
+                if not activity:
+                    logger.debug('No activity, sleeping for %is', self.boss.sleepSeconds())
+                    time.sleep(self.boss.sleepSeconds())
+    
+        def prepareSbatch(self, cpu, mem, jobID):
+            #  Returns the sbatch command line before the script to run
+            sbatch_line = ['sbatch', '-Q', '-J', 'toil_job_{}'.format(jobID)]
+    
+            if self.boss.environment:
+                for k, v in self.boss.environment.iteritems():
+                    quoted_value = quote(os.environ[k] if v is None else v)
+                    sbatch_line.append('--export={}={}'.format(k, quoted_value))
+    
+            if mem is not None:
+                # memory passed in is in bytes, but slurm expects megabytes
+                sbatch_line.append('--mem={}'.format(int(mem) / 2 ** 20))
+            if cpu is not None:
+                sbatch_line.append('--cpus-per-task={}'.format(int(math.ceil(cpu))))
+    
+            # "Native extensions" for SLURM (see DRMAA or SAGA)
+            nativeConfig = os.getenv('TOIL_SLURM_ARGS')
+            if nativeConfig is not None:
+                logger.debug("Native SLURM options appended to sbatch from TOIL_SLURM_RESOURCES env. variable: {}".format(nativeConfig))
+                if "--mem" or "--cpus-per-task" in nativeConfig:
+                    raise ValueError("Some resource arguments are incompatible: {}".format(nativeConfig))
+    
+                sbatch_line.extend([nativeConfig])
+    
+            return sbatch_line
+    
+        def sbatch(self, sbatch_line):
+            logger.debug("Running %r", sbatch_line)
+            try:
+                output = subprocess.check_output(sbatch_line, stderr=subprocess.STDOUT)
+                # sbatch prints a line like 'Submitted batch job 2954103'
+                result = int(output.strip().split()[-1])
+                logger.debug("sbatch submitted job %d", result)
+                return result
+            except subprocess.CalledProcessError as e:
+                logger.error("sbatch command failed with code %d: %s", e.returncode, e.output)
+                raise e
+            except OSError as e:
+                logger.error("sbatch command failed")
+                raise e
+    
+        def getJobExitCode(self, slurmJobID):
+            logger.debug("Getting exit code for slurm job %d", slurmJobID)
+            # SLURM job exit codes are obtained by running sacct.
+            args = ['sacct',
+                    '-n', # no header
+                    '-j', str(slurmJobID), # job
+                    '--format', 'State,ExitCode', # specify output columns
+                    '-P', # separate columns with pipes
+                    '-S', '1970-01-01'] # override start time limit
+            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            for line in process.stdout:
+                values = line.strip().split('|')
+                if len(values) < 2:
+                    continue
+                state, exitcode = values
+                logger.debug("sacct job state is %s", state)
+                # If Job is in a running state, return None to indicate we don't have an update
+                if state in ('PENDING', 'RUNNING', 'CONFIGURING', 'COMPLETING', 'RESIZING', 'SUSPENDED'):
+                    return None
+                status, _ = exitcode.split(':')
+                logger.debug("sacct exit code is %s, returning status %s", exitcode, status)
+                return int(status)
+            logger.debug("Did not find exit code for job in sacct output")
+            return None
 
-    def prepareSbatch(self, cpu, mem, jobID):
-        #  Returns the sbatch command line before the script to run
-        sbatch_line = ['sbatch', '-Q', '-J', 'toil_job_{}'.format(jobID)]
 
-        if self.boss.environment:
-            for k, v in self.boss.environment.iteritems():
-                quoted_value = quote(os.environ[k] if v is None else v)
-                sbatch_line.append('--export={}={}'.format(k, quoted_value))
-
-        if mem is not None:
-            # memory passed in is in bytes, but slurm expects megabytes
-            sbatch_line.append('--mem={}'.format(int(mem) / 2 ** 20))
-        if cpu is not None:
-            sbatch_line.append('--cpus-per-task={}'.format(int(math.ceil(cpu))))
-
-        # "Native extensions" for SLURM (see DRMAA or SAGA)
-        nativeConfig = os.getenv('TOIL_SLURM_ARGS')
-        if nativeConfig is not None:
-            logger.debug("Native SLURM options appended to sbatch from TOIL_SLURM_RESOURCES env. variable: {}".format(nativeConfig))
-            if "--mem" or "--cpus-per-task" in nativeConfig:
-                raise ValueError("Some resource arguments are incompatible: {}".format(nativeConfig))
-
-            sbatch_line.extend([nativeConfig])
-
-        return sbatch_line
-
-    def sbatch(self, sbatch_line):
-        logger.debug("Running %r", sbatch_line)
-        try:
-            output = subprocess.check_output(sbatch_line, stderr=subprocess.STDOUT)
-            # sbatch prints a line like 'Submitted batch job 2954103'
-            result = int(output.strip().split()[-1])
-            logger.debug("sbatch submitted job %d", result)
-            return result
-        except subprocess.CalledProcessError as e:
-            logger.error("sbatch command failed with code %d: %s", e.returncode, e.output)
-            raise e
-        except OSError as e:
-            logger.error("sbatch command failed")
-            raise e
-
-    def getJobExitCode(self, slurmJobID):
-        logger.debug("Getting exit code for slurm job %d", slurmJobID)
-        # SLURM job exit codes are obtained by running sacct.
-        args = ['sacct',
-                '-n', # no header
-                '-j', str(slurmJobID), # job
-                '--format', 'State,ExitCode', # specify output columns
-                '-P', # separate columns with pipes
-                '-S', '1970-01-01'] # override start time limit
-        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        for line in process.stdout:
-            values = line.strip().split('|')
-            if len(values) < 2:
-                continue
-            state, exitcode = values
-            logger.debug("sacct job state is %s", state)
-            # If Job is in a running state, return None to indicate we don't have an update
-            if state in ('PENDING', 'RUNNING', 'CONFIGURING', 'COMPLETING', 'RESIZING', 'SUSPENDED'):
-                return None
-            status, _ = exitcode.split(':')
-            logger.debug("sacct exit code is %s, returning status %s", exitcode, status)
-            return int(status)
-        logger.debug("Did not find exit code for job in sacct output")
-        return None
-
-
-class SlurmBatchSystem(AbstractGridEngineBatchSystem):
     """
     The interface for SLURM
     """

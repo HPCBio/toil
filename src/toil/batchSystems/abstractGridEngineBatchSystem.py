@@ -60,22 +60,13 @@ class AbstractGridEngineBatchSystem(BatchSystemSupport):
         self.killQueue = Queue()
         self.killedJobsQueue = Queue()
         # get the associated worker class here
-        workerClass = self.workerClass()
-        self.worker = workerClass(self.newJobsQueue, self.updatedJobsQueue, self.killQueue,
+        self.worker = self.Worker(self.newJobsQueue, self.updatedJobsQueue, self.killQueue,
                               self.killedJobsQueue, self)
         self.worker.start()
 
     def __des__(self):
         # Closes the file handle associated with the results file.
         self.resultsFileHandle.close()
-    
-    @abstractclassmethod
-    def workerClass(cls):
-        '''
-        Implementations need to define a Worker class (at the moment, a class that inherits Thread)
-        which implements the basic functions for launching jobs on specific batch system.
-        '''
-        raise NotImplementedError()
         
     @classmethod
     def supportsWorkerCleanup(cls):
