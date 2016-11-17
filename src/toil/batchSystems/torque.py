@@ -62,21 +62,6 @@ class TorqueBatchSystem(AbstractGridEngineBatchSystem):
     
             return times
     
-        def getBatchSystemID(self, jobID):
-            if not jobID in self.batchJobIDs:
-                RuntimeError("Unknown jobID, could not be converted")
-    
-            (job, task) = self.batchJobIDs[jobID]
-            if task is None:
-                return str(job)
-            else:
-                return str(job) + "." + str(task)
-    
-        def forgetJob(self, jobID):
-            self.runningJobs.remove(jobID)
-            del self.allocatedCpus[jobID]
-            del self.batchJobIDs[jobID]
-    
         def killJobs(self):
             # Load hit list:
             killList = list()

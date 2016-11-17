@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class AbstractGridEngineWorker(Thread):
     
-    __metaclass__ = ABCMeta
+    # __metaclass__ = ABCMeta
     
     def __init__(self, newJobsQueue, updatedJobsQueue, killQueue, killedJobsQueue, boss):
         '''
@@ -56,24 +56,21 @@ class AbstractGridEngineWorker(Thread):
         :rtype: list
         '''
         raise NotImplementedError()
-            
-    @abstractmethod
-    def getBatchSystemID(self, jobID):
-        '''
-        Get a batch system-specific job ID from Toil job IDs
-        
-        :param string jobID: Toil job ID
-        '''
-        raise NotImplementedError()
 
-    @abstractmethod
+    def getBatchSystemID(self, jobID):
+        if not jobID in self.batchJobIDs:
+            RuntimeError("Unknown jobID, could not be converted")
+    
+        (job, task) = self.batchJobIDs[jobID]
+        if task is None:
+            return str(job)
+        else:
+            return str(job) + "." + str(task)
+            
     def forgetJob(self, jobID):
-        '''
-        Delete a specific Toil job from the list of submitted batch system jobs
-        
-        :param string jobID: the job identifier from the batch system
-        '''
-        raise NotImplementedError()
+        self.runningJobs.remove(jobID)
+        del self.allocatedCpus[jobID]
+        del self.batchJobIDs[jobID]
 
     @abstractmethod
     def killJobs(self):

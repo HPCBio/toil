@@ -48,21 +48,6 @@ class GridEngineBatchSystem(AbstractGridEngineBatchSystem):
     
             return times
     
-        def getSgeID(self, jobID):
-            if not jobID in self.batchJobIDs:
-                RuntimeError("Unknown jobID, could not be converted")
-    
-            (job, task) = self.batchJobIDs[jobID]
-            if task is None:
-                return str(job)
-            else:
-                return str(job) + "." + str(task)
-    
-        def forgetJob(self, jobID):
-            self.runningJobs.remove(jobID)
-            del self.allocatedCpus[jobID]
-            del self.batchJobIDs[jobID]
-    
         def killJobs(self):
             # Load hit list:
             killList = list()
@@ -81,7 +66,7 @@ class GridEngineBatchSystem(AbstractGridEngineBatchSystem):
             for jobID in list(killList):
                 if jobID in self.runningJobs:
                     logger.debug('Killing job: %s', jobID)
-                    subprocess.check_call(['qdel', self.getSgeID(jobID)])
+                    subprocess.check_call(['qdel', self.getBatchSystemID(jobID)])
                 else:
                     if jobID in self.waitingJobs:
                         self.waitingJobs.remove(jobID)

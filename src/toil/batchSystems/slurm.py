@@ -70,17 +70,12 @@ class SlurmBatchSystem(AbstractGridEngineBatchSystem):
     
             return times
     
-        def getSlurmID(self, jobID):
+        def getBatchSystemID(self, jobID):
             if not jobID in self.batchJobIDs:
                 RuntimeError("Unknown jobID, could not be converted")
     
             job = self.batchJobIDs[jobID]
             return str(job)
-    
-        def forgetJob(self, jobID):
-            self.runningJobs.remove(jobID)
-            del self.allocatedCpus[jobID]
-            del self.batchJobIDs[jobID]
     
         def killJobs(self):
             # Load hit list:
@@ -100,7 +95,7 @@ class SlurmBatchSystem(AbstractGridEngineBatchSystem):
             for jobID in list(killList):
                 if jobID in self.runningJobs:
                     logger.debug('Killing job: %s', jobID)
-                    subprocess.check_call(['scancel', self.getSlurmID(jobID)])
+                    subprocess.check_call(['scancel', self.getBatchSystemID(jobID)])
                 else:
                     if jobID in self.waitingJobs:
                         self.waitingJobs.remove(jobID)
