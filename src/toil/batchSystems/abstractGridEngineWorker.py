@@ -74,7 +74,7 @@ class AbstractGridEngineWorker(Thread):
     @abstractmethod
     def checkOnJobs(self):
         '''
-        Check job status
+        Check status on all jobs
         '''
         raise NotImplementedError()
 

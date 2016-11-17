@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 class GridEngineBatchSystem(AbstractGridEngineBatchSystem):
     
-    class Worker(Thread):
+    class Worker(AbstractGridEngineWorker):
         def __init__(self, newJobsQueue, updatedJobsQueue, killQueue, killedJobsQueue, boss):
             Thread.__init__(self)
             self.newJobsQueue = newJobsQueue
