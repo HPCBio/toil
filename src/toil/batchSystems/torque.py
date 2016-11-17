@@ -37,18 +37,6 @@ class TorqueBatchSystem(AbstractGridEngineBatchSystem):
     
     # class-specific Worker
     class Worker(AbstractGridEngineWorker):
-        
-        def __init__(self, newJobsQueue, updatedJobsQueue, killQueue, killedJobsQueue, boss):
-            Thread.__init__(self)
-            self.newJobsQueue = newJobsQueue
-            self.updatedJobsQueue = updatedJobsQueue
-            self.killQueue = killQueue
-            self.killedJobsQueue = killedJobsQueue
-            self.waitingJobs = list()
-            self.runningJobs = set()
-            self.boss = boss
-            self.allocatedCpus = dict()
-            self.batchJobIDs = dict()
     
         def getRunningJobIDs(self):
             times = {}

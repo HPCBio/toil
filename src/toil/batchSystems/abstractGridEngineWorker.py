@@ -22,11 +22,31 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 class AbstractGridEngineWorker(Thread):
-    '''
-    Abstract worker interface class.
-    '''
     
     __metaclass__ = ABCMeta
+    
+    def __init__(self, newJobsQueue, updatedJobsQueue, killQueue, killedJobsQueue, boss):
+        '''
+        Abstract worker interface class. All instances are created with five
+        initial arguments (below). Note the Queue instances passed are empty.
+        
+        :param newJobsQueue: a Queue of new (unsubmitted) jobs
+        :param updatedJobsQueue: a Queue of jobs that have been updated 
+        :param killQueue: a Queue of active jobs that need to be killed
+        :param killedJobsQueue: Queue of killed jobs for this worker
+        :param boss: the AbstractGridEngineBatchSystem instance that controls this AbstractGridEngineWorker
+        
+        '''
+        Thread.__init__(self)
+        self.newJobsQueue = newJobsQueue
+        self.updatedJobsQueue = updatedJobsQueue
+        self.killQueue = killQueue
+        self.killedJobsQueue = killedJobsQueue
+        self.waitingJobs = list()
+        self.runningJobs = set()
+        self.boss = boss
+        self.allocatedCpus = dict()
+        self.batchJobIDs = dict()
 
     @abstractmethod
     def getRunningJobIDs(self):
