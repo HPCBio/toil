@@ -48,15 +48,6 @@ class AbstractGridEngineWorker(Thread):
         self.allocatedCpus = dict()
         self.batchJobIDs = dict()
 
-    @abstractmethod
-    def getRunningJobIDs(self):
-        '''
-        Get a list of running job IDs.
-
-        :rtype: list
-        '''
-        raise NotImplementedError()
-
     def getBatchSystemID(self, jobID):
         if not jobID in self.batchJobIDs:
             RuntimeError("Unknown jobID, could not be converted")
@@ -114,17 +105,10 @@ class AbstractGridEngineWorker(Thread):
 
         return True
 
-    
-    @abstractmethod
-    def createJobs(self, newJob):
-        '''
-        Create a new job with the Toil job ID
-        
-        :param string newJob: Toil job ID 
-        '''
-        raise NotImplementedError()
-
     def checkOnJobs(self):
+        '''
+        Check and update status of jobs.
+        '''
         activity = False
         logger.debug('List of running jobs: %r', self.runningJobs)
         for jobID in list(self.runningJobs):
@@ -135,17 +119,60 @@ class AbstractGridEngineWorker(Thread):
                 self.forgetJob(jobID)
         return activity
 
-    @abstractmethod
     def run(self):
         '''
-        Run any new jobs in queue
+        Run any new jobs
+        '''
+
+        while True:
+            activity = False
+            newJob = None
+            if not self.newJobsQueue.empty():
+                activity = True
+                newJob = self.newJobsQueue.get()
+                if newJob is None:
+                    logger.debug('Received queue sentinel.')
+                    break
+            activity |= self.killJobs()
+            activity |= self.createJobs(newJob)
+            activity |= self.checkOnJobs()
+            if not activity:
+                logger.debug('No activity, sleeping for %is', self.boss.sleepSeconds())
+                time.sleep(self.boss.sleepSeconds())
+
+    @abstractmethod
+    def getRunningJobIDs(self):
+        '''
+        Get a list of running job IDs. Implementation-specific; called by boss class
+        AbstractGridEngineBatchSystem implementation via getRunningBatchJobIDs()
+
+        :rtype: list
+        '''
+        raise NotImplementedError()
+
+    @abstractmethod
+    def killJob(self, jobID):
+        '''
+        Kill specific job with the Toil job ID.  Implementation-specific;
+        called by killJobs()
+        
+        :param string jobID: Toil job ID
+        '''
+        raise NotImplementedError()
+    
+    @abstractmethod
+    def createJobs(self, newJob):
+        '''
+        Create a new job with the Toil job ID.  Implementation-specific; called by run()
+        
+        :param string newJob: Toil job ID 
         '''
         raise NotImplementedError()
 
     @abstractmethod    
     def getJobExitCode(self, batchJobID):
         '''
-        Return job exit code.
+        Return job exit code. Implementation-specific; called by checkOnJobs()
         
         :param string batchjobID: batch system job ID
         '''
