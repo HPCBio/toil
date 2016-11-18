@@ -72,21 +72,24 @@ class TorqueBatchSystem(AbstractGridEngineBatchSystem):
                     break
                 else:
                     killList.append(jobId)
-    
+        
             if not killList:
                 return False
-    
+        
             # Do the dirty job
             for jobID in list(killList):
                 if jobID in self.runningJobs:
                     logger.debug('Killing job: %s', jobID)
-                    subprocess.check_call(['qdel', self.getBatchSystemID(jobID)])
+                    
+                    # this call should be implementation-specific, all other
+                    # code is redundant w/ other implementations
+                    self.killJob(jobID)
                 else:
                     if jobID in self.waitingJobs:
                         self.waitingJobs.remove(jobID)
                     self.killedJobsQueue.put(jobID)
                     killList.remove(jobID)
-    
+        
             # Wait to confirm the kill
             while killList:
                 for jobID in list(killList):
@@ -98,8 +101,12 @@ class TorqueBatchSystem(AbstractGridEngineBatchSystem):
                 if len(killList) > 0:
                     logger.warn("Some jobs weren't killed, trying again in %is.", self.boss.sleepSeconds())
                     time.sleep(self.boss.sleepSeconds())
-    
+        
             return True
+        
+        def killJob(self, jobID):
+            logger.debug("Killing job %is", jobID)
+            return subprocess.check_call(['qdel', self.getBatchSystemID(jobID)])
     
         def createJobs(self, newJob):
             activity = False
@@ -117,18 +124,7 @@ class TorqueBatchSystem(AbstractGridEngineBatchSystem):
                 self.runningJobs.add(jobID)
                 self.allocatedCpus[jobID] = cpu
             return activity
-    
-        def checkOnJobs(self):
-            activity = False
-            logger.debug('List of running jobs: %r', self.runningJobs)
-            for jobID in list(self.runningJobs):
-                status = self.getJobExitCode(self.batchJobIDs[jobID])
-                if status is not None:
-                    activity = True
-                    self.updatedJobsQueue.put((jobID, status))
-                    self.forgetJob(jobID)
-            return activity
-    
+        
         def run(self):
             while True:
                 activity = False

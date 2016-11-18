@@ -132,19 +132,7 @@ class SlurmBatchSystem(AbstractGridEngineBatchSystem):
                 self.runningJobs.add(jobID)
                 self.allocatedCpus[jobID] = cpu
             return activity
-    
-        def checkOnJobs(self):
-            activity = False
-            logger.debug('List of running jobs: %r', self.runningJobs)
-            for jobID in list(self.runningJobs):
-                logger.debug("Checking status of internal job id %d", jobID)
-                status = self.getJobExitCode(self.batchJobIDs[jobID])
-                if status is not None:
-                    activity = True
-                    self.updatedJobsQueue.put((jobID, status))
-                    self.forgetJob(jobID)
-            return activity
-    
+        
         def run(self):
             while True:
                 activity = False

@@ -72,12 +72,48 @@ class AbstractGridEngineWorker(Thread):
         del self.allocatedCpus[jobID]
         del self.batchJobIDs[jobID]
 
-    @abstractmethod
     def killJobs(self):
-        '''
-        Delete all Toil jobs.
-        '''
-        raise NotImplementedError()
+        # Load hit list:
+        killList = list()
+        while True:
+            try:
+                jobId = self.killQueue.get(block=False)
+            except Empty:
+                break
+            else:
+                killList.append(jobId)
+
+        if not killList:
+            return False
+
+        # Do the dirty job
+        for jobID in list(killList):
+            if jobID in self.runningJobs:
+                logger.debug('Killing job: %s', jobID)
+                
+                # this call should be implementation-specific, all other
+                # code is redundant w/ other implementations
+                self.killJob(jobID)
+            else:
+                if jobID in self.waitingJobs:
+                    self.waitingJobs.remove(jobID)
+                self.killedJobsQueue.put(jobID)
+                killList.remove(jobID)
+
+        # Wait to confirm the kill
+        while killList:
+            for jobID in list(killList):
+                if self.getJobExitCode(self.batchJobIDs[jobID]) is not None:
+                    logger.debug('Adding jobID %s to killedJobsQueue', jobID)
+                    self.killedJobsQueue.put(jobID)
+                    killList.remove(jobID)
+                    self.forgetJob(jobID)
+            if len(killList) > 0:
+                logger.warn("Some jobs weren't killed, trying again in %is.", self.boss.sleepSeconds())
+                time.sleep(self.boss.sleepSeconds())
+
+        return True
+
     
     @abstractmethod
     def createJobs(self, newJob):
@@ -88,12 +124,16 @@ class AbstractGridEngineWorker(Thread):
         '''
         raise NotImplementedError()
 
-    @abstractmethod
     def checkOnJobs(self):
-        '''
-        Check status on all jobs
-        '''
-        raise NotImplementedError()
+        activity = False
+        logger.debug('List of running jobs: %r', self.runningJobs)
+        for jobID in list(self.runningJobs):
+            status = self.getJobExitCode(self.batchJobIDs[jobID])
+            if status is not None:
+                activity = True
+                self.updatedJobsQueue.put((jobID, status))
+                self.forgetJob(jobID)
+        return activity
 
     @abstractmethod
     def run(self):
