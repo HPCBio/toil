@@ -23,9 +23,6 @@ import sys
 import xml.etree.ElementTree as ET
 import tempfile
 
-from Queue import Queue, Empty
-from threading import Thread
-
 from toil.batchSystems import MemoryString
 from toil.batchSystems.abstractGridEngineBatchSystem import AbstractGridEngineBatchSystem
 from toil.batchSystems.abstractGridEngineWorker import AbstractGridEngineWorker
@@ -40,6 +37,7 @@ class TorqueBatchSystem(AbstractGridEngineBatchSystem):
     
         def getRunningJobIDs(self):
             times = {}
+            logger.debug("Here!!!")
             currentjobs = dict((str(self.batchJobIDs[x][0]), x) for x in self.runningJobs)
             process = subprocess.Popen(["qstat"], stdout=subprocess.PIPE)
             stdout, stderr = process.communicate()
@@ -54,55 +52,13 @@ class TorqueBatchSystem(AbstractGridEngineBatchSystem):
                         # normal qstat has a quirk with job time where it reports '0'
                         # when initially running; this catches this case
                         if walltime == '0':
-                            logger.debug("JobID:" + jobid + ", time:" + walltime)
+                            # logger.debug("JobID:" + jobid + ", time:" + walltime)
                             walltime = time.mktime(time.strptime(walltime, "%S"))                        
                         else:
                             walltime = time.mktime(time.strptime(walltime, "%H:%M:%S"))
                         times[currentjobs[jobid]] = walltime
     
             return times
-    
-        def killJobs(self):
-            # Load hit list:
-            killList = list()
-            while True:
-                try:
-                    jobId = self.killQueue.get(block=False)
-                except Empty:
-                    break
-                else:
-                    killList.append(jobId)
-        
-            if not killList:
-                return False
-        
-            # Do the dirty job
-            for jobID in list(killList):
-                if jobID in self.runningJobs:
-                    logger.debug('Killing job: %s', jobID)
-                    
-                    # this call should be implementation-specific, all other
-                    # code is redundant w/ other implementations
-                    self.killJob(jobID)
-                else:
-                    if jobID in self.waitingJobs:
-                        self.waitingJobs.remove(jobID)
-                    self.killedJobsQueue.put(jobID)
-                    killList.remove(jobID)
-        
-            # Wait to confirm the kill
-            while killList:
-                for jobID in list(killList):
-                    if self.getJobExitCode(self.batchJobIDs[jobID]) is not None:
-                        logger.debug('Adding jobID %s to killedJobsQueue', jobID)
-                        self.killedJobsQueue.put(jobID)
-                        killList.remove(jobID)
-                        self.forgetJob(jobID)
-                if len(killList) > 0:
-                    logger.warn("Some jobs weren't killed, trying again in %is.", self.boss.sleepSeconds())
-                    time.sleep(self.boss.sleepSeconds())
-        
-            return True
         
         def killJob(self, jobID):
             logger.debug("Killing job %is", jobID)
@@ -124,23 +80,6 @@ class TorqueBatchSystem(AbstractGridEngineBatchSystem):
                 self.runningJobs.add(jobID)
                 self.allocatedCpus[jobID] = cpu
             return activity
-        
-        def run(self):
-            while True:
-                activity = False
-                newJob = None
-                if not self.newJobsQueue.empty():
-                    activity = True
-                    newJob = self.newJobsQueue.get()
-                    if newJob is None:
-                        logger.debug('Received queue sentinel.')
-                        break
-                activity |= self.killJobs()
-                activity |= self.createJobs(newJob)
-                activity |= self.checkOnJobs()
-                if not activity:
-                    logger.debug('No activity, sleeping for %is', self.boss.sleepSeconds())
-                    time.sleep(self.boss.sleepSeconds())
     
         def prepareQsub(self, cpu, mem, jobID):
             
