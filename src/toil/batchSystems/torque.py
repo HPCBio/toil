@@ -35,9 +35,11 @@ class TorqueBatchSystem(AbstractGridEngineBatchSystem):
     # class-specific Worker
     class Worker(AbstractGridEngineWorker):
     
+        '''
+        Torque-specific AbstractGridEngineWorker methods
+        '''
         def getRunningJobIDs(self):
             times = {}
-            logger.debug("Here!!!")
             currentjobs = dict((str(self.batchJobIDs[x][0]), x) for x in self.runningJobs)
             process = subprocess.Popen(["qstat"], stdout=subprocess.PIPE)
             stdout, stderr = process.communicate()
@@ -52,7 +54,6 @@ class TorqueBatchSystem(AbstractGridEngineBatchSystem):
                         # normal qstat has a quirk with job time where it reports '0'
                         # when initially running; this catches this case
                         if walltime == '0':
-                            # logger.debug("JobID:" + jobid + ", time:" + walltime)
                             walltime = time.mktime(time.strptime(walltime, "%S"))                        
                         else:
                             walltime = time.mktime(time.strptime(walltime, "%H:%M:%S"))
@@ -61,8 +62,7 @@ class TorqueBatchSystem(AbstractGridEngineBatchSystem):
             return times
         
         def killJob(self, jobID):
-            logger.debug("Killing job %is", jobID)
-            return subprocess.check_call(['qdel', self.getBatchSystemID(jobID)])
+            subprocess.check_call(['qdel', self.getBatchSystemID(jobID)])
     
         def createJobs(self, newJob):
             activity = False
@@ -80,7 +80,25 @@ class TorqueBatchSystem(AbstractGridEngineBatchSystem):
                 self.runningJobs.add(jobID)
                 self.allocatedCpus[jobID] = cpu
             return activity
+
+        def getJobExitCode(self, torqueJobID):
+            job, task = torqueJobID
+            args = ["qstat", "-f", str(job)]
     
+            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            for line in process.stdout:
+                line = line.strip()
+                if line.startswith("failed") and int(line.split()[1]) == 1:
+                    return 1
+                if line.startswith("exit_status"):
+                    status = line.split(' = ')[1]
+                    logger.debug('Exit Status: ' + status)
+                    return int(status)
+            return None
+        
+        '''
+        Implementation-specific helper methods
+        '''
         def prepareQsub(self, cpu, mem, jobID):
             
             # TODO: passing $PWD on command line not working for -d, resorting to
@@ -109,34 +127,15 @@ class TorqueBatchSystem(AbstractGridEngineBatchSystem):
                 qsubline.extend(['-l ncpus=' + str(int(math.ceil(cpu)))])
             
             return qsubline
-        
     
         def qsub(self, qsubline):
-            logger.debug("Running %r", ' '.join(qsubline))
             process = subprocess.Popen(qsubline, stdout=subprocess.PIPE)
             so, se = process.communicate()
             # TODO: the full URI here may be needed on complex setups, stripping
             # down to integer job ID only may be bad long-term
             result = int(so.strip().split('.')[0])
-            logger.debug("Result %r", result)
             return result
-    
-        def getJobExitCode(self, torqueJobID):
-            job, task = torqueJobID
-            args = ["qstat", "-f", str(job)]
-    
-            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            for line in process.stdout:
-                line = line.strip()
-                # logger.debug("Line: " + line)
-                if line.startswith("failed") and int(line.split()[1]) == 1:
-                    return 1
-                if line.startswith("exit_status"):
-                    status = line.split(' = ')[1]
-                    logger.debug('Exit Status: ' + status)
-                    return int(status)
-            return None
-        
+            
         def _generateTorqueWrapper(self, command):
             """
             A very simple script generator that just wraps the command given; for

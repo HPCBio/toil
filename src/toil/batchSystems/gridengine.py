@@ -19,8 +19,6 @@ from pipes import quote
 import subprocess
 import time
 import math
-from Queue import Queue, Empty
-from threading import Thread
 
 from toil.batchSystems import MemoryString
 from toil.batchSystems.abstractGridEngineBatchSystem import AbstractGridEngineBatchSystem
@@ -32,6 +30,9 @@ class GridEngineBatchSystem(AbstractGridEngineBatchSystem):
     
     class Worker(AbstractGridEngineWorker):
     
+        '''
+        Grid Engine-specific AbstractGridEngineWorker methods
+        '''    
         def getRunningJobIDs(self):
             times = {}
             currentjobs = dict((str(self.batchJobIDs[x][0]), x) for x in self.runningJobs)
@@ -47,46 +48,10 @@ class GridEngineBatchSystem(AbstractGridEngineBatchSystem):
                         times[currentjobs[items[0]]] = time.time() - jobstart
     
             return times
-    
-        def killJobs(self):
-            # Load hit list:
-            killList = list()
-            while True:
-                try:
-                    jobId = self.killQueue.get(block=False)
-                except Empty:
-                    break
-                else:
-                    killList.append(jobId)
-    
-            if not killList:
-                return False
-    
-            # Do the dirty job
-            for jobID in list(killList):
-                if jobID in self.runningJobs:
-                    logger.debug('Killing job: %s', jobID)
-                    subprocess.check_call(['qdel', self.getBatchSystemID(jobID)])
-                else:
-                    if jobID in self.waitingJobs:
-                        self.waitingJobs.remove(jobID)
-                    self.killedJobsQueue.put(jobID)
-                    killList.remove(jobID)
-    
-            # Wait to confirm the kill
-            while killList:
-                for jobID in list(killList):
-                    if self.getJobExitCode(self.batchJobIDs[jobID]) is not None:
-                        logger.debug('Adding jobID %s to killedJobsQueue', jobID)
-                        self.killedJobsQueue.put(jobID)
-                        killList.remove(jobID)
-                        self.forgetJob(jobID)
-                if len(killList) > 0:
-                    logger.warn("Some jobs weren't killed, trying again in %is.", self.boss.sleepSeconds())
-                    time.sleep(self.boss.sleepSeconds())
-    
-            return True
-    
+            
+        def killJob(self, jobID):
+            subprocess.check_call(['qdel', self.getBatchSystemID(jobID)])
+            
         def createJobs(self, newJob):
             activity = False
             # Load new job id if present:
@@ -103,24 +68,25 @@ class GridEngineBatchSystem(AbstractGridEngineBatchSystem):
                 self.runningJobs.add(jobID)
                 self.allocatedCpus[jobID] = cpu
             return activity
+
+        def getJobExitCode(self, sgeJobID):
+            job, task = sgeJobID
+            args = ["qacct", "-j", str(job)]
+            if task is not None:
+                args.extend(["-t", str(task)])
+            logger.debug("Running %r", args)
+            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            for line in process.stdout:
+                if line.startswith("failed") and int(line.split()[1]) == 1:
+                    return 1
+                elif line.startswith("exit_status"):
+                    logger.debug('Exit Status: %r', line.split()[1])
+                    return int(line.split()[1])
+            return None
         
-        def run(self):
-            while True:
-                activity = False
-                newJob = None
-                if not self.newJobsQueue.empty():
-                    activity = True
-                    newJob = self.newJobsQueue.get()
-                    if newJob is None:
-                        logger.debug('Received queue sentinel.')
-                        break
-                activity |= self.killJobs()
-                activity |= self.createJobs(newJob)
-                activity |= self.checkOnJobs()
-                if not activity:
-                    logger.debug('No activity, sleeping for %is', self.boss.sleepSeconds())
-                    time.sleep(self.boss.sleepSeconds())
-    
+        '''
+        Implementation-specific helper methods
+        '''
         def prepareQsub(self, cpu, mem, jobID):
             qsubline = ['qsub', '-V', '-b', 'y', '-terse', '-j', 'y', '-cwd',
                         '-N', 'toil_job_' + str(jobID)]
@@ -153,21 +119,6 @@ class GridEngineBatchSystem(AbstractGridEngineBatchSystem):
             process = subprocess.Popen(qsubline, stdout=subprocess.PIPE)
             result = int(process.stdout.readline().strip().split('.')[0])
             return result
-    
-        def getJobExitCode(self, sgeJobID):
-            job, task = sgeJobID
-            args = ["qacct", "-j", str(job)]
-            if task is not None:
-                args.extend(["-t", str(task)])
-            logger.debug("Running %r", args)
-            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            for line in process.stdout:
-                if line.startswith("failed") and int(line.split()[1]) == 1:
-                    return 1
-                elif line.startswith("exit_status"):
-                    logger.debug('Exit Status: %r', line.split()[1])
-                    return int(line.split()[1])
-            return None
 
     """
     The interface for SGE aka Sun GridEngine.

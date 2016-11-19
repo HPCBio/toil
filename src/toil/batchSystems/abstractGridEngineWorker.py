@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 class AbstractGridEngineWorker(Thread):
     
-    # __metaclass__ = ABCMeta
+    __metaclass__ = ABCMeta
     
     def __init__(self, newJobsQueue, updatedJobsQueue, killQueue, killedJobsQueue, boss):
         '''
@@ -112,7 +112,6 @@ class AbstractGridEngineWorker(Thread):
         Check and update status of jobs.
         '''
         activity = False
-        logger.debug('List of running jobs: %r', self.runningJobs)
         for jobID in list(self.runningJobs):
             status = self.getJobExitCode(self.batchJobIDs[jobID])
             if status is not None:
@@ -145,8 +144,9 @@ class AbstractGridEngineWorker(Thread):
     @abstractmethod
     def getRunningJobIDs(self):
         '''
-        Get a list of running job IDs. Implementation-specific; called by boss class
-        AbstractGridEngineBatchSystem implementation via getRunningBatchJobIDs()
+        Get a list of running job IDs. Implementation-specific; called by boss 
+        AbstractGridEngineBatchSystem implementation via
+        AbstractGridEngineBatchSystem.getRunningBatchJobIDs()
 
         :rtype: list
         '''
@@ -155,8 +155,8 @@ class AbstractGridEngineWorker(Thread):
     @abstractmethod
     def killJob(self, jobID):
         '''
-        Kill specific job with the Toil job ID.  Implementation-specific;
-        called by killJobs()
+        Kill specific job with the Toil job ID. Implementation-specific; called
+        by AbstractGridEngineWorker.killJobs()
         
         :param string jobID: Toil job ID
         '''
@@ -165,7 +165,8 @@ class AbstractGridEngineWorker(Thread):
     @abstractmethod
     def createJobs(self, newJob):
         '''
-        Create a new job with the Toil job ID.  Implementation-specific; called by run()
+        Create a new job with the Toil job ID. Implementation-specific; called
+        by AbstractGridEngineWorker.run()
         
         :param string newJob: Toil job ID 
         '''
@@ -174,7 +175,8 @@ class AbstractGridEngineWorker(Thread):
     @abstractmethod    
     def getJobExitCode(self, batchJobID):
         '''
-        Return job exit code. Implementation-specific; called by checkOnJobs()
+        Returns job exit code. Implementation-specific; called by
+        AbstractGridEngineWorker.checkOnJobs()
         
         :param string batchjobID: batch system job ID
         '''
